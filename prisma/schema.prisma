@@ -1,0 +1,344 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================
+// 조직 및 설치 정보
+// ============================================
+
+model Organization {
+  id              String   @id @default(cuid())
+  githubId        Int      @unique
+  login           String   @unique
+  name            String?
+  avatarUrl       String?
+  installationId  Int?
+  settings        Json?    // 핵심모듈 경로, 가중치 등
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  repos        Repository[]
+  analysisRuns AnalysisRun[]
+  members      OrganizationMember[]
+}
+
+model OrganizationMember {
+  id        String   @id @default(cuid())
+  orgId     String
+  userId    String
+  role      OrgRole  @default(MEMBER)
+  createdAt DateTime @default(now())
+
+  org  Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, userId])
+  @@index([userId])
+}
+
+enum OrgRole {
+  ADMIN
+  MEMBER
+}
+
+// ============================================
+// 사용자 (로그인 사용자)
+// ============================================
+
+model User {
+  id           String   @id @default(cuid())
+  githubId     Int      @unique
+  login        String   @unique
+  name         String?
+  email        String?
+  avatarUrl    String?
+  accessToken  String?  // GitHub API 호출용 (암호화 필요)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  organizations OrganizationMember[]
+  analysisRuns  AnalysisRun[]        @relation("CreatedBy")
+}
+
+// ============================================
+// 저장소
+// ============================================
+
+model Repository {
+  id            String   @id @default(cuid())
+  orgId         String
+  githubId      Int
+  fullName      String   @unique
+  name          String
+  defaultBranch String   @default("main")
+  isArchived    Boolean  @default(false)
+  isPrivate     Boolean  @default(true)
+  language      String?
+  description   String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  org       Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  commits   Commit[]
+  workUnits WorkUnit[]
+
+  @@index([orgId])
+}
+
+// ============================================
+// GitHub 사용자 (커밋 작성자 매핑)
+// ============================================
+
+model GitHubUser {
+  id        String   @id @default(cuid())
+  login     String   @unique
+  name      String?
+  email     String?
+  avatarUrl String?
+  aliases   String[] // 이메일 alias 목록
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  commits   Commit[]
+  workUnits WorkUnit[]
+  reports   YearlyReport[]
+}
+
+// ============================================
+// 분석 실행
+// ============================================
+
+model AnalysisRun {
+  id         String    @id @default(cuid())
+  orgId      String
+  year       Int
+  status     RunStatus @default(QUEUED)
+  progress   Json?     // { total: N, completed: M, failed: K }
+  options    Json      // 분석 옵션 스냅샷
+  error      String?
+  startedAt  DateTime?
+  finishedAt DateTime?
+  createdAt  DateTime  @default(now())
+  createdById String?
+
+  org         Organization      @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  createdBy   User?             @relation("CreatedBy", fields: [createdById], references: [id])
+  targetUsers AnalysisRunUser[]
+  workUnits   WorkUnit[]
+  reports     YearlyReport[]
+  jobLogs     JobLog[]
+
+  @@unique([orgId, year])
+  @@index([status])
+}
+
+enum RunStatus {
+  QUEUED
+  SCANNING_REPOS
+  SCANNING_COMMITS
+  BUILDING_UNITS
+  REVIEWING
+  FINALIZING
+  DONE
+  FAILED
+}
+
+model AnalysisRunUser {
+  runId     String
+  userLogin String
+
+  run AnalysisRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@id([runId, userLogin])
+}
+
+// ============================================
+// 커밋
+// ============================================
+
+model Commit {
+  id           String   @id @default(cuid())
+  repoId       String
+  sha          String
+  authorLogin  String
+  authorEmail  String?
+  message      String   @db.Text
+  committedAt  DateTime
+  additions    Int      @default(0)
+  deletions    Int      @default(0)
+  filesChanged Int      @default(0)
+
+  repo          Repository       @relation(fields: [repoId], references: [id], onDelete: Cascade)
+  author        GitHubUser       @relation(fields: [authorLogin], references: [login])
+  files         CommitFile[]
+  workUnitLinks WorkUnitCommit[]
+
+  @@unique([repoId, sha])
+  @@index([authorLogin, committedAt])
+  @@index([repoId, committedAt])
+}
+
+model CommitFile {
+  id        String @id @default(cuid())
+  commitId  String
+  path      String
+  additions Int    @default(0)
+  deletions Int    @default(0)
+  status    String // added, modified, deleted, renamed
+
+  commit Commit @relation(fields: [commitId], references: [id], onDelete: Cascade)
+
+  @@index([commitId])
+  @@index([path])
+}
+
+// ============================================
+// 작업 단위 (Work Unit)
+// ============================================
+
+model WorkUnit {
+  id        String @id @default(cuid())
+  runId     String
+  repoId    String
+  userLogin String
+
+  // 시간 범위
+  startAt DateTime
+  endAt   DateTime
+
+  // 통계
+  commitCount  Int
+  filesChanged Int
+  additions    Int
+  deletions    Int
+
+  // 분석 결과
+  summary       String?  @db.Text // 자동 생성 요약
+  primaryPaths  String[] // 주요 변경 경로 Top 5
+  impactScore   Float    @default(0)
+  impactFactors Json? // 스코어 세부 요인
+
+  // 플래그
+  isHotfix  Boolean @default(false)
+  hasRevert Boolean @default(false)
+  isSampled Boolean @default(false)
+
+  createdAt DateTime @default(now())
+
+  run      AnalysisRun      @relation(fields: [runId], references: [id], onDelete: Cascade)
+  repo     Repository       @relation(fields: [repoId], references: [id], onDelete: Cascade)
+  user     GitHubUser       @relation(fields: [userLogin], references: [login])
+  commits  WorkUnitCommit[]
+  aiReview AiReview?
+
+  @@index([runId, userLogin])
+  @@index([repoId])
+  @@index([impactScore(sort: Desc)])
+}
+
+model WorkUnitCommit {
+  workUnitId String
+  commitId   String
+  order      Int // 커밋 순서
+
+  workUnit WorkUnit @relation(fields: [workUnitId], references: [id], onDelete: Cascade)
+  commit   Commit   @relation(fields: [commitId], references: [id], onDelete: Cascade)
+
+  @@id([workUnitId, commitId])
+}
+
+// ============================================
+// AI 리뷰
+// ============================================
+
+model AiReview {
+  id         String @id @default(cuid())
+  workUnitId String @unique
+
+  // 모델 정보
+  model         String // gpt-4o, claude-3-5-sonnet 등
+  promptVersion String // v1.0.0
+  inputTokens   Int?
+  outputTokens  Int?
+
+  // 결과 (구조화)
+  result      Json    // ReviewResult 타입
+  rawResponse String? @db.Text // 원본 응답 (디버깅용)
+
+  createdAt DateTime @default(now())
+
+  workUnit WorkUnit @relation(fields: [workUnitId], references: [id], onDelete: Cascade)
+}
+
+// ============================================
+// 연간 리포트
+// ============================================
+
+model YearlyReport {
+  id        String @id @default(cuid())
+  runId     String
+  userLogin String
+  year      Int
+
+  // 정량 지표
+  stats Json // ReportStats 타입
+
+  // AI 생성 텍스트
+  summary      String   @db.Text
+  strengths    String[]
+  improvements String[]
+  actionItems  String[]
+
+  // 매니저 입력
+  managerNotes String?   @db.Text
+  isFinalized  Boolean   @default(false)
+  finalizedAt  DateTime?
+  finalizedBy  String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  run  AnalysisRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  user GitHubUser  @relation(fields: [userLogin], references: [login])
+
+  @@unique([runId, userLogin])
+  @@index([userLogin, year])
+}
+
+// ============================================
+// Job 실행 로그
+// ============================================
+
+model JobLog {
+  id         String    @id @default(cuid())
+  runId      String
+  jobType    String
+  jobId      String // QStash message ID
+  status     JobStatus
+  input      Json?
+  output     Json?
+  error      String?   @db.Text
+  startedAt  DateTime
+  endedAt    DateTime?
+  retryCount Int       @default(0)
+
+  run AnalysisRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@index([runId, jobType])
+}
+
+enum JobStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+  RETRYING
+}
