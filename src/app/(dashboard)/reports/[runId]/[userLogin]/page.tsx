@@ -15,6 +15,7 @@ import { RepoContributionChart } from "@/components/charts/repo-contribution-cha
 import { ImpactRadarChart } from "@/components/charts/impact-radar-chart";
 import { ManagerNotesEditor } from "@/components/reports/manager-notes-editor";
 import { PdfDownloadButton } from "@/components/reports/pdf-download-button";
+import { AiRetryButton } from "@/components/reports/ai-retry-button";
 import {
   ArrowLeft,
   CheckCircle2,
@@ -46,8 +47,8 @@ export default async function UserReportPage({
             include: {
               members: currentUser
                 ? {
-                    where: { userId: currentUser.id },
-                  }
+                  where: { userId: currentUser.id },
+                }
                 : false,
             },
           },
@@ -114,6 +115,10 @@ export default async function UserReportPage({
                 확정됨
               </Badge>
             )}
+            <AiRetryButton
+              reportId={report.id}
+              isFinalized={report.isFinalized}
+            />
             <PdfDownloadButton
               reportId={report.id}
               userLogin={report.userLogin}

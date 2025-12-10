@@ -19,7 +19,6 @@ export async function POST(request: NextRequest) {
       where: { id: runId },
       include: {
         org: { select: { login: true, name: true } },
-        targetUsers: true,
       },
     });
 
@@ -30,23 +29,24 @@ export async function POST(request: NextRequest) {
     const options = run.options as AnalysisOptions;
     const llmModel = (options?.llmModel || "gpt-4o") as LLMModelType;
 
-    // 2. 각 사용자별 연간 리포트 생성
-    for (const targetUser of run.targetUsers) {
-      const userLogin = targetUser.userLogin;
+    // 2. 단일 사용자 연간 리포트 생성
+    const userLogin = run.userLogin;
 
-      // Work Unit 통계 조회
-      const workUnits = await db.workUnit.findMany({
-        where: {
-          runId,
-          userLogin,
-        },
-        include: {
-          repo: { select: { fullName: true, name: true } },
-          aiReview: true,
-        },
-      });
+    // Work Unit 통계 조회
+    const workUnits = await db.workUnit.findMany({
+      where: {
+        runId,
+        userLogin,
+      },
+      include: {
+        repo: { select: { fullName: true, name: true } },
+        aiReview: true,
+      },
+    });
 
-      if (workUnits.length === 0) continue;
+    if (workUnits.length === 0) {
+      console.warn(`No work units found for user ${userLogin}`);
+    } else {
 
       // 커밋 통계
       const commitCount = await db.commit.count({
@@ -241,7 +241,7 @@ export async function POST(request: NextRequest) {
         jobType: "finalize_reports",
         jobId: `finalize-${runId}-${Date.now()}`,
         status: "COMPLETED",
-        output: { reportCount: run.targetUsers.length },
+        output: { reportCount: 1 }, // 단일 사용자
         startedAt: new Date(),
         endedAt: new Date(),
       },
@@ -249,7 +249,7 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({
       success: true,
-      reportCount: run.targetUsers.length,
+      reportCount: 1, // 단일 사용자
     });
   } catch (error) {
     console.error("Finalize reports error:", error);

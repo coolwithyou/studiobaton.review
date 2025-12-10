@@ -208,7 +208,6 @@ async function generateReports(runId: string): Promise<number> {
     where: { id: runId },
     include: {
       org: { select: { login: true, name: true } },
-      targetUsers: true,
     },
   });
 
@@ -217,82 +216,78 @@ async function generateReports(runId: string): Promise<number> {
   }
 
   let reportCount = 0;
+  const userLogin = run.userLogin; // 단일 사용자
 
-  for (const targetUser of run.targetUsers) {
-    const userLogin = targetUser.userLogin;
+  await updateProgress(runId, {
+    message: `리포트 생성 중: ${userLogin}`,
+  });
 
-    await updateProgress(runId, {
-      message: `리포트 생성 중: ${userLogin}`,
-    });
+  // Work Unit 통계 조회
+  const workUnits = await db.workUnit.findMany({
+    where: {
+      runId,
+      userLogin,
+    },
+    include: {
+      repo: { select: { fullName: true, name: true } },
+      aiReview: true,
+    },
+  });
 
-    // Work Unit 통계 조회
-    const workUnits = await db.workUnit.findMany({
+  // 데이터가 없는 경우에도 빈 리포트 생성
+  if (workUnits.length === 0) {
+    console.warn(`[Job] ⚠️ No Work Units for ${userLogin} - creating empty report`);
+
+    // 커밋 조회 (Work Unit이 없어도 커밋은 있을 수 있음)
+    const commitCount = await db.commit.count({
       where: {
-        runId,
-        userLogin,
-      },
-      include: {
-        repo: { select: { fullName: true, name: true } },
-        aiReview: true,
+        authorLogin: userLogin,
+        repo: { orgId: run.orgId },
+        committedAt: {
+          gte: new Date(`${run.year}-01-01`),
+          lte: new Date(`${run.year}-12-31T23:59:59`),
+        },
       },
     });
 
-    // 데이터가 없는 경우에도 빈 리포트 생성
-    if (workUnits.length === 0) {
-      console.warn(`[Job] ⚠️ No Work Units for ${userLogin} - creating empty report`);
-
-      // 커밋 조회 (Work Unit이 없어도 커밋은 있을 수 있음)
-      const commitCount = await db.commit.count({
-        where: {
-          authorLogin: userLogin,
-          repo: { orgId: run.orgId },
-          committedAt: {
-            gte: new Date(`${run.year}-01-01`),
-            lte: new Date(`${run.year}-12-31T23:59:59`),
-          },
-        },
-      });
-
-      // 빈 리포트 생성
-      await db.yearlyReport.upsert({
-        where: {
-          runId_userLogin: {
-            runId,
-            userLogin,
-          },
-        },
-        create: {
+    // 빈 리포트 생성
+    await db.yearlyReport.upsert({
+      where: {
+        runId_userLogin: {
           runId,
           userLogin,
-          year: run.year,
-          stats: JSON.parse(JSON.stringify({
-            totalCommits: commitCount,
-            totalWorkUnits: 0,
-            totalAdditions: 0,
-            totalDeletions: 0,
-            avgImpactScore: 0,
-            topRepos: [],
-            workTypeDistribution: {},
-            monthlyActivity: Array.from({ length: 12 }, (_, i) => ({
-              month: i + 1,
-              commits: 0,
-              workUnits: 0,
-            })),
-          })),
-          summary: commitCount > 0 
-            ? `${run.year}년 동안 ${commitCount}개의 커밋이 수집되었으나 Work Unit 생성에 실패했습니다.`
-            : `${run.year}년 동안 활동이 없거나 커밋 데이터 수집에 실패했습니다.`,
-          strengths: [],
-          improvements: ["데이터 수집 문제 확인 필요"],
-          actionItems: ["관리자에게 문의하여 데이터 수집 상태 확인"],
         },
-        update: {},
-      });
+      },
+      create: {
+        runId,
+        userLogin,
+        year: run.year,
+        stats: JSON.parse(JSON.stringify({
+          totalCommits: commitCount,
+          totalWorkUnits: 0,
+          totalAdditions: 0,
+          totalDeletions: 0,
+          avgImpactScore: 0,
+          topRepos: [],
+          workTypeDistribution: {},
+          monthlyActivity: Array.from({ length: 12 }, (_, i) => ({
+            month: i + 1,
+            commits: 0,
+            workUnits: 0,
+          })),
+        })),
+        summary: commitCount > 0
+          ? `${run.year}년 동안 ${commitCount}개의 커밋이 수집되었으나 Work Unit 생성에 실패했습니다.`
+          : `${run.year}년 동안 활동이 없거나 커밋 데이터 수집에 실패했습니다.`,
+        strengths: [],
+        improvements: ["데이터 수집 문제 확인 필요"],
+        actionItems: ["관리자에게 문의하여 데이터 수집 상태 확인"],
+      },
+      update: {},
+    });
 
-      reportCount++;
-      continue;
-    }
-
+    reportCount++;
+  } else {
     // 커밋 통계
     const commitCount = await db.commit.count({
       where: {
@@ -466,8 +461,8 @@ async function generateReports(runId: string): Promise<number> {
     reportCount++;
   }
 
-  // 최종 검증: 모든 대상 사용자의 리포트 생성 확인
-  const expectedReports = run.targetUsers.length;
+  // 최종 검증: 단일 사용자의 리포트 생성 확인
+  const expectedReports = 1; // 단일 사용자
   const generatedReports = await db.yearlyReport.findMany({
     where: { runId },
     select: { userLogin: true },
@@ -478,48 +473,38 @@ async function generateReports(runId: string): Promise<number> {
   );
 
   if (generatedReports.length < expectedReports) {
-    const generatedLogins = new Set(generatedReports.map(r => r.userLogin));
-    const missingUsers = run.targetUsers.filter(
-      u => !generatedLogins.has(u.userLogin)
-    );
-
-    console.error(
-      `[Job] ⚠️ Missing reports for ${missingUsers.length} users:`,
-      missingUsers.map(u => u.userLogin).join(", ")
-    );
+    console.error(`[Job] ⚠️ Missing report for user: ${run.userLogin}`);
 
     // 누락된 사용자에 대해 빈 리포트 생성
-    for (const missingUser of missingUsers) {
-      console.log(`[Job] Creating empty report for ${missingUser.userLogin}`);
+    console.log(`[Job] Creating empty report for ${run.userLogin}`);
 
-      await db.yearlyReport.create({
-        data: {
-          runId,
-          userLogin: missingUser.userLogin,
-          year: run.year,
-          stats: JSON.parse(JSON.stringify({
-            totalCommits: 0,
-            totalWorkUnits: 0,
-            totalAdditions: 0,
-            totalDeletions: 0,
-            avgImpactScore: 0,
-            topRepos: [],
-            workTypeDistribution: {},
-            monthlyActivity: Array.from({ length: 12 }, (_, i) => ({
-              month: i + 1,
-              commits: 0,
-              workUnits: 0,
-            })),
+    await db.yearlyReport.create({
+      data: {
+        runId,
+        userLogin: run.userLogin,
+        year: run.year,
+        stats: JSON.parse(JSON.stringify({
+          totalCommits: 0,
+          totalWorkUnits: 0,
+          totalAdditions: 0,
+          totalDeletions: 0,
+          avgImpactScore: 0,
+          topRepos: [],
+          workTypeDistribution: {},
+          monthlyActivity: Array.from({ length: 12 }, (_, i) => ({
+            month: i + 1,
+            commits: 0,
+            workUnits: 0,
           })),
-          summary: `${run.year}년 데이터 수집 실패 또는 활동 없음`,
-          strengths: [],
-          improvements: ["커밋 데이터 수집 실패"],
-          actionItems: ["관리자에게 문의하여 GitHub 접근 권한 및 사용자명 확인"],
-        },
-      });
+        })),
+        summary: `${run.year}년 데이터 수집 실패 또는 활동 없음`,
+        strengths: [],
+        improvements: ["커밋 데이터 수집 실패"],
+        actionItems: ["관리자에게 문의하여 GitHub 접근 권한 및 사용자명 확인"],
+      },
+    });
 
-      reportCount++;
-    }
+    reportCount++;
   }
 
   // Job 로그 기록
@@ -529,10 +514,10 @@ async function generateReports(runId: string): Promise<number> {
       jobType: "finalize_reports",
       jobId: `finalize-${runId}-${Date.now()}`,
       status: "COMPLETED",
-      output: { 
+      output: {
         reportCount,
-        expectedReports,
-        missingReports: expectedReports - generatedReports.length,
+        expectedReports: 1,
+        missingReports: 1 - reportCount,
       },
       startedAt: new Date(),
       endedAt: new Date(),
@@ -540,6 +525,200 @@ async function generateReports(runId: string): Promise<number> {
   });
 
   return reportCount;
+}
+
+// 특정 리포트의 AI 분석 재시도
+export async function retryAiReviewForReport(
+  reportId: string,
+  llmModel?: LLMModelType
+): Promise<{ reviewed: number; failed: number }> {
+  console.log(`[Job] Retrying AI review for report ${reportId}`);
+
+  const report = await db.yearlyReport.findUnique({
+    where: { id: reportId },
+    include: {
+      run: {
+        include: {
+          org: { select: { login: true, name: true, settings: true } },
+        },
+      },
+    },
+  });
+
+  if (!report) {
+    throw new Error("Report not found");
+  }
+
+  const run = report.run;
+  const options = run.options as AnalysisOptions;
+  const model = llmModel || (options?.llmModel as LLMModelType) || "claude-sonnet-4-5";
+  const orgSettings = run.org.settings as { teamStandards?: string } | null;
+
+  // 해당 리포트의 샘플링된 Work Unit 조회
+  const sampledWorkUnits = await db.workUnit.findMany({
+    where: {
+      runId: run.id,
+      userLogin: report.userLogin,
+      isSampled: true,
+    },
+    include: {
+      commits: {
+        include: {
+          commit: {
+            include: {
+              files: true,
+            },
+          },
+        },
+        orderBy: { order: "asc" },
+      },
+      repo: { select: { fullName: true, name: true } },
+      user: { select: { login: true, name: true } },
+      aiReview: true,
+    },
+  });
+
+  let reviewed = 0;
+  let failed = 0;
+
+  for (const workUnit of sampledWorkUnits) {
+    try {
+      // 기존 리뷰가 있으면 삭제
+      if (workUnit.aiReview) {
+        await db.aiReview.delete({
+          where: { id: workUnit.aiReview.id },
+        });
+      }
+
+      // 리뷰 입력 데이터 구성
+      const reviewInput: ReviewInput = {
+        workUnit: {
+          summary: workUnit.summary || "",
+          commits: workUnit.commits.map((wuc) => ({
+            sha: wuc.commit.sha,
+            message: wuc.commit.message,
+          })),
+          primaryPaths: workUnit.primaryPaths,
+          stats: {
+            additions: workUnit.additions,
+            deletions: workUnit.deletions,
+            filesChanged: workUnit.filesChanged,
+            commitCount: workUnit.commitCount,
+          },
+          impactScore: workUnit.impactScore,
+          impactFactors: workUnit.impactFactors as unknown as ImpactFactors,
+          startAt: workUnit.startAt.toISOString(),
+          endAt: workUnit.endAt.toISOString(),
+        },
+        diffSamples: [],
+        context: {
+          orgName: run.org.login,
+          repoName: workUnit.repo.name,
+          userName: workUnit.user.login,
+          year: run.year,
+          teamStandards: orgSettings?.teamStandards,
+        },
+      };
+
+      // LLM 리뷰 생성
+      const { result, model: usedModel, promptVersion } = await generateReview(
+        model,
+        reviewInput
+      );
+
+      // 리뷰 저장
+      await db.aiReview.create({
+        data: {
+          workUnitId: workUnit.id,
+          model: usedModel,
+          promptVersion,
+          result: JSON.parse(JSON.stringify(result)),
+          rawResponse: JSON.stringify(result),
+        },
+      });
+
+      reviewed++;
+    } catch (error) {
+      console.error(`[Job] Review retry failed for work unit ${workUnit.id}:`, error);
+      failed++;
+    }
+  }
+
+  // 리포트 재생성 (AI 리뷰 기반)
+  await regenerateReportSummary(reportId);
+
+  console.log(`[Job] AI review retry completed: ${reviewed} reviewed, ${failed} failed`);
+  return { reviewed, failed };
+}
+
+// 리포트 요약 재생성 (AI 리뷰 기반)
+async function regenerateReportSummary(reportId: string): Promise<void> {
+  const report = await db.yearlyReport.findUnique({
+    where: { id: reportId },
+    include: {
+      run: {
+        include: {
+          org: { select: { login: true, name: true } },
+        },
+      },
+    },
+  });
+
+  if (!report) return;
+
+  // Work Units 조회 (AI 리뷰 포함)
+  const workUnits = await db.workUnit.findMany({
+    where: {
+      runId: report.runId,
+      userLogin: report.userLogin,
+    },
+    include: {
+      repo: { select: { fullName: true, name: true } },
+      aiReview: true,
+    },
+  });
+
+  // AI 리뷰 결과 집계
+  const aiReviews = workUnits
+    .filter((wu) => wu.aiReview)
+    .map((wu) => wu.aiReview!.result as ReviewResult);
+
+  if (aiReviews.length === 0) return;
+
+  // 강점, 개선점, 액션 아이템 집계
+  const allStrengths = aiReviews.flatMap((r) => r.strengths || []);
+  const allSuggestions = aiReviews.flatMap((r) => r.suggestions || []);
+  const allRisks = aiReviews.flatMap((r) => r.risks || []);
+
+  // 중복 제거 및 상위 5개 선택
+  const uniqueStrengths = [...new Set(allStrengths)].slice(0, 5);
+  const uniqueImprovements = [...new Set([...allSuggestions, ...allRisks])].slice(0, 5);
+  const actionItems = aiReviews.flatMap((r) => r.learningPoints || []).slice(0, 5);
+
+  // 요약 생성
+  const workTypeMap: Record<string, number> = {};
+  aiReviews.forEach((r) => {
+    const type = r.workType || "feature";
+    workTypeMap[type] = (workTypeMap[type] || 0) + 1;
+  });
+
+  const dominantType = Object.entries(workTypeMap).sort((a, b) => b[1] - a[1])[0]?.[0] || "feature";
+  const avgConfidence = aiReviews.reduce((sum, r) => sum + (r.confidence || 0.5), 0) / aiReviews.length;
+
+  const summary = `${report.year}년 동안 총 ${workUnits.length}개의 작업 묶음에서 활동했습니다. ` +
+    `주요 작업 유형은 ${dominantType}이며, AI 분석 신뢰도는 평균 ${(avgConfidence * 100).toFixed(0)}%입니다. ` +
+    `${uniqueStrengths.length > 0 ? `주요 강점: ${uniqueStrengths[0]}` : ""}`;
+
+  // 리포트 업데이트
+  await db.yearlyReport.update({
+    where: { id: reportId },
+    data: {
+      summary,
+      strengths: uniqueStrengths,
+      improvements: uniqueImprovements,
+      actionItems: actionItems.length > 0 ? actionItems : ["지속적인 코드 품질 개선"],
+    },
+  });
 }
 
 // AI 리뷰 및 리포트 생성 실행

@@ -11,6 +11,9 @@ import { clusterCommits } from "@/lib/analysis/clustering";
 import { calculateImpactScore } from "@/lib/analysis/scoring";
 import { AnalysisOptions } from "@/types";
 
+// 리포별 커밋 수집 타임아웃 (5분)
+const REPO_SCAN_TIMEOUT_MS = 5 * 60 * 1000;
+
 interface RepoProgress {
   repoName: string;
   status: "pending" | "scanning" | "done" | "failed";
@@ -68,7 +71,8 @@ async function updateProgress(
 
 // 1단계: 저장소 스캔
 export async function scanRepos(runId: string): Promise<string[]> {
-  console.log(`[Job] Starting scanRepos for run ${runId}`);
+  console.log(`[Job] ===== 1단계: 저장소 스캔 시작 =====`);
+  console.log(`[Job] Run ID: ${runId}`);
 
   const run = await db.analysisRun.findUnique({
     where: { id: runId },
@@ -137,20 +141,20 @@ export async function scanRepos(runId: string): Promise<string[]> {
     repoProgress,
   });
 
-  console.log(`[Job] Found ${filteredRepos.length} repos for run ${runId}`);
+  console.log(`[Job] ===== 1단계 완료: ${filteredRepos.length}개 저장소 발견 =====`);
   return filteredRepos.map((r) => r.fullName);
 }
 
-// 2단계: 커밋 수집
+// 2단계: 커밋 수집 (타임아웃 포함)
 export async function scanCommitsForRepo(
   runId: string,
   repoFullName: string
 ): Promise<{ totalCommits: number; savedCommits: number }> {
-  console.log(`[Job] Scanning commits for ${repoFullName}`);
+  console.log(`[Job] [커밋 수집] 시작: ${repoFullName}`);
 
   const run = await db.analysisRun.findUnique({
     where: { id: runId },
-    include: { org: true, targetUsers: true },
+    include: { org: true },
   });
 
   if (!run || !run.org.installationId) {
@@ -180,89 +184,90 @@ export async function scanCommitsForRepo(
   const [owner, repoName] = repoFullName.split("/");
   const since = `${run.year}-01-01T00:00:00Z`;
   const until = `${run.year}-12-31T23:59:59Z`;
-  const targetLogins = run.targetUsers.map((u) => u.userLogin);
+  const authorLogin = run.userLogin; // 단일 사용자
 
   let totalCommits = 0;
   let savedCommits = 0;
 
-  for (const authorLogin of targetLogins) {
-    try {
-      // GitHubUser 확인/생성
-      await db.gitHubUser.upsert({
-        where: { login: authorLogin },
-        create: { login: authorLogin },
-        update: {},
-      });
+  try {
+    // GitHubUser 확인/생성
+    await db.gitHubUser.upsert({
+      where: { login: authorLogin },
+      create: { login: authorLogin },
+      update: {},
+    });
 
-      const commits = await getCommits(octokit, {
-        owner,
-        repo: repoName,
-        since,
-        until,
-        author: authorLogin,
-      });
+    console.log(`[Job] Fetching commits for ${authorLogin} in ${repoFullName}...`);
+    const commits = await getCommits(octokit, {
+      owner,
+      repo: repoName,
+      since,
+      until,
+      author: authorLogin,
+    });
 
-      totalCommits += commits.length;
+    totalCommits = commits.length;
+    console.log(`[Job] Found ${totalCommits} commits for ${authorLogin} in ${repoFullName}`);
 
-      for (const commit of commits) {
-        try {
-          const details = await getCommitDetails(octokit, owner, repoName, commit.sha);
+    for (const commit of commits) {
+      try {
+        const details = await getCommitDetails(octokit, owner, repoName, commit.sha);
 
-          const savedCommit = await db.commit.upsert({
-            where: {
-              repoId_sha: {
-                repoId: repo.id,
-                sha: commit.sha,
-              },
-            },
-            create: {
+        const savedCommit = await db.commit.upsert({
+          where: {
+            repoId_sha: {
               repoId: repo.id,
               sha: commit.sha,
-              authorLogin,
-              authorEmail: commit.authorEmail,
-              message: commit.message,
-              committedAt: new Date(commit.committedAt || Date.now()),
-              additions: details.stats.additions,
-              deletions: details.stats.deletions,
-              filesChanged: details.files.length,
+            },
+          },
+          create: {
+            repoId: repo.id,
+            sha: commit.sha,
+            authorLogin,
+            authorEmail: commit.authorEmail,
+            message: commit.message,
+            committedAt: new Date(commit.committedAt || Date.now()),
+            additions: details.stats.additions,
+            deletions: details.stats.deletions,
+            filesChanged: details.files.length,
+          },
+          update: {
+            additions: details.stats.additions,
+            deletions: details.stats.deletions,
+            filesChanged: details.files.length,
+          },
+        });
+
+        // 파일 변경 정보 저장
+        for (const file of details.files) {
+          await db.commitFile.upsert({
+            where: {
+              id: `${savedCommit.id}-${file.path}`.slice(0, 255),
+            },
+            create: {
+              id: `${savedCommit.id}-${file.path}`.slice(0, 255),
+              commitId: savedCommit.id,
+              path: file.path,
+              status: file.status || "modified",
+              additions: file.additions,
+              deletions: file.deletions,
             },
             update: {
-              additions: details.stats.additions,
-              deletions: details.stats.deletions,
-              filesChanged: details.files.length,
+              status: file.status || "modified",
+              additions: file.additions,
+              deletions: file.deletions,
             },
           });
-
-          // 파일 변경 정보 저장
-          for (const file of details.files) {
-            await db.commitFile.upsert({
-              where: {
-                id: `${savedCommit.id}-${file.path}`.slice(0, 255),
-              },
-              create: {
-                id: `${savedCommit.id}-${file.path}`.slice(0, 255),
-                commitId: savedCommit.id,
-                path: file.path,
-                status: file.status || "modified",
-                additions: file.additions,
-                deletions: file.deletions,
-              },
-              update: {
-                status: file.status || "modified",
-                additions: file.additions,
-                deletions: file.deletions,
-              },
-            });
-          }
-
-          savedCommits++;
-        } catch (commitError) {
-          console.error(`[Job] Error processing commit ${commit.sha}:`, commitError);
         }
+
+        savedCommits++;
+      } catch (commitError) {
+        console.error(`[Job] Error processing commit ${commit.sha}:`, commitError);
       }
-    } catch (userError) {
-      console.error(`[Job] Error fetching commits for ${authorLogin}:`, userError);
     }
+  } catch (error) {
+    console.error(`[Job] Error fetching commits for ${authorLogin} in ${repoFullName}:`, error);
+    throw error;
   }
 
   // 완료 상태 업데이트
@@ -280,13 +285,80 @@ export async function scanCommitsForRepo(
     repoProgress: finalRepoProgress,
   });
 
-  console.log(`[Job] Saved ${savedCommits}/${totalCommits} commits for ${repoFullName}`);
+  console.log(`[Job] [커밋 수집] 완료: ${repoFullName} - ${savedCommits}/${totalCommits} commits 저장됨`);
   return { totalCommits, savedCommits };
+}
+
+// 커밋 수집 완료 검증 함수
+async function verifyCommitCollection(runId: string): Promise<{
+  success: boolean;
+  totalRepos: number;
+  completedRepos: number;
+  failedRepos: number;
+  collectedCommits: number;
+}> {
+  console.log(`[Job] ===== 커밋 수집 검증 시작 =====`);
+
+  const run = await db.analysisRun.findUnique({
+    where: { id: runId },
+    select: { progress: true, userLogin: true, orgId: true, year: true },
+  });
+
+  if (!run) {
+    throw new Error("Run not found during verification");
+  }
+
+  const progress = (run.progress as Record<string, unknown>) || {};
+  const repoProgress = (progress.repoProgress as RepoProgress[]) || [];
+
+  const completedRepos = repoProgress.filter((r) => r.status === "done").length;
+  const failedRepos = repoProgress.filter((r) => r.status === "failed").length;
+  const totalRepos = repoProgress.length;
+
+  // 실제 저장된 커밋 수 조회
+  const collectedCommits = await db.commit.count({
+    where: {
+      authorLogin: run.userLogin,
+      repo: { orgId: run.orgId },
+      committedAt: {
+        gte: new Date(`${run.year}-01-01`),
+        lte: new Date(`${run.year}-12-31T23:59:59`),
+      },
+    },
+  });
+
+  const allReposProcessed = completedRepos + failedRepos === totalRepos;
+
+  console.log(`[Job] 검증 결과:`);
+  console.log(`[Job]   - 전체 리포: ${totalRepos}개`);
+  console.log(`[Job]   - 완료: ${completedRepos}개`);
+  console.log(`[Job]   - 실패: ${failedRepos}개`);
+  console.log(`[Job]   - 수집된 커밋: ${collectedCommits}개`);
+  console.log(`[Job]   - 모든 리포 처리 완료: ${allReposProcessed ? "예" : "아니오"}`);
+
+  if (!allReposProcessed) {
+    console.warn(`[Job] ⚠️ 일부 리포의 커밋 수집이 완료되지 않았습니다.`);
+  }
+
+  if (failedRepos > 0) {
+    const failedRepoNames = repoProgress
+      .filter((r) => r.status === "failed")
+      .map((r) => r.repoName);
+    console.warn(`[Job] ⚠️ 실패한 리포: ${failedRepoNames.join(", ")}`);
+  }
+
+  return {
+    success: allReposProcessed && collectedCommits > 0,
+    totalRepos,
+    completedRepos,
+    failedRepos,
+    collectedCommits,
+  };
 }
 
 // 3단계: Work Unit 생성
 export async function buildWorkUnits(runId: string): Promise<number> {
-  console.log(`[Job] Building work units for run ${runId}`);
+  console.log(`[Job] ===== 3단계: Work Unit 생성 시작 =====`);
 
   await updateProgress(runId, {
     status: "BUILDING_UNITS",
@@ -297,7 +369,6 @@ export async function buildWorkUnits(runId: string): Promise<number> {
     where: { id: runId },
     include: {
       org: true,
-      targetUsers: true,
     },
   });
 
@@ -309,28 +380,32 @@ export async function buildWorkUnits(runId: string): Promise<number> {
   const orgSettings = (run.org.settings as Record<string, unknown>) || {};
   let totalWorkUnits = 0;
 
-  // 각 사용자별로 Work Unit 생성
-  for (const targetUser of run.targetUsers) {
-    const userLogin = targetUser.userLogin;
+  // 단일 사용자에 대해 Work Unit 생성
+  const userLogin = run.userLogin;
+  console.log(`[Job] Work Unit 생성 대상 사용자: ${userLogin}`);
 
-    // 해당 사용자의 커밋 조회
-    const commits = await db.commit.findMany({
-      where: {
-        authorLogin: userLogin,
-        repo: { orgId: run.orgId },
-        committedAt: {
-          gte: new Date(`${run.year}-01-01`),
-          lte: new Date(`${run.year}-12-31T23:59:59`),
-        },
+  // 해당 사용자의 커밋 조회
+  const commits = await db.commit.findMany({
+    where: {
+      authorLogin: userLogin,
+      repo: { orgId: run.orgId },
+      committedAt: {
+        gte: new Date(`${run.year}-01-01`),
+        lte: new Date(`${run.year}-12-31T23:59:59`),
       },
-      include: {
-        repo: true,
-        files: true,
-      },
-      orderBy: { committedAt: "asc" },
-    });
+    },
+    include: {
+      repo: true,
+      files: true,
+    },
+    orderBy: { committedAt: "asc" },
+  });
 
-    if (commits.length === 0) continue;
+  console.log(`[Job] ${userLogin}의 커밋 ${commits.length}개 발견`);
+
+  if (commits.length === 0) {
+    console.warn(`[Job] ⚠️ ${userLogin}의 커밋이 없습니다. Work Unit을 생성하지 않습니다.`);
+  } else {
 
     // 저장소별로 그룹화
     const commitsByRepo = new Map<string, typeof commits>();
@@ -342,13 +417,19 @@ export async function buildWorkUnits(runId: string): Promise<number> {
       commitsByRepo.get(repoId)!.push(commit);
     }
 
+    console.log(`[Job] ${commitsByRepo.size}개 저장소에서 커밋 발견`);
+
     // 각 저장소별로 Work Unit 클러스터링
     for (const [repoId, repoCommits] of commitsByRepo) {
+      const repoName = repoCommits[0]?.repo.fullName || repoId;
+      console.log(`[Job] [${repoName}] ${repoCommits.length}개 커밋 클러스터링 중...`);
       // clusterCommits는 CommitWithFiles[]를 받아서 WorkUnitData[]를 반환
       const workUnitDatas = clusterCommits(
         repoCommits,
         options?.clusteringConfig
       );
+
+      console.log(`[Job] [${repoName}] ${workUnitDatas.length}개 Work Unit 생성됨`);
 
       for (const workUnitData of workUnitDatas) {
         const clusterCommitsList = workUnitData.commits;
@@ -427,7 +508,7 @@ export async function buildWorkUnits(runId: string): Promise<number> {
     }
   }
 
-  console.log(`[Job] Created ${totalWorkUnits} work units for run ${runId}`);
+  console.log(`[Job] ===== 3단계 완료: ${totalWorkUnits}개 Work Unit 생성됨 =====`);
 
   // AI 리뷰 대기 상태로 변경
   await updateProgress(runId, {
@@ -440,7 +521,9 @@ export async function buildWorkUnits(runId: string): Promise<number> {
 
 // 전체 분석 실행 (개발용 동기 실행)
 export async function runAnalysis(runId: string): Promise<void> {
-  console.log(`[Job] Starting analysis for run ${runId}`);
+  console.log(`[Job] =============================================`);
+  console.log(`[Job] 분석 시작: Run ID ${runId}`);
+  console.log(`[Job] =============================================`);
 
   try {
     // 분석 시작 시간 기록
@@ -451,6 +534,10 @@ export async function runAnalysis(runId: string): Promise<void> {
 
     // 1단계: 저장소 스캔
     const repos = await scanRepos(runId);
+
+    if (repos.length === 0) {
+      throw new Error("분석할 저장소가 없습니다.");
+    }
 
     // 분석 취소 확인
     const checkCancelled = async () => {
@@ -464,22 +551,39 @@ export async function runAnalysis(runId: string): Promise<void> {
     }
 
     // 2단계: 각 저장소별 커밋 스캔
-    for (const repoFullName of repos) {
+    console.log(`[Job] ===== 2단계: 커밋 수집 시작 (${repos.length}개 리포) =====`);
+    let successfulScans = 0;
+    let failedScans = 0;
+
+    for (let i = 0; i < repos.length; i++) {
+      const repoFullName = repos[i];
       if (await checkCancelled()) {
         console.log(`[Job] Analysis ${runId} was cancelled`);
         return;
       }
 
+      console.log(`[Job] [2-${i + 1}/${repos.length}] ${repoFullName} 커밋 수집 중...`);
+
       try {
-        await scanCommitsForRepo(runId, repoFullName);
+        // 타임아웃과 함께 커밋 스캔 실행
+        const timeoutPromise = new Promise<never>((_, reject) => {
+          setTimeout(() => reject(new Error("Timeout")), REPO_SCAN_TIMEOUT_MS);
+        });
+
+        const scanPromise = scanCommitsForRepo(runId, repoFullName);
+
+        await Promise.race([scanPromise, timeoutPromise]);
+        successfulScans++;
       } catch (error) {
-        console.error(`[Job] Error scanning ${repoFullName}:`, error);
+        failedScans++;
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        console.error(`[Job] ❌ [2-${i + 1}/${repos.length}] ${repoFullName} 실패:`, errorMessage);
         // 개별 저장소 실패 시 진행률 업데이트
         const run = await db.analysisRun.findUnique({ where: { id: runId } });
         const progress = (run?.progress as Record<string, unknown>) || {};
         const repoProgress = ((progress.repoProgress as RepoProgress[]) || []).map((rp) =>
           rp.repoName === repoFullName
-            ? { ...rp, status: "failed" as const, error: String(error) }
+            ? { ...rp, status: "failed" as const, error: errorMessage }
             : rp
         );
         const failedCount = repoProgress.filter((r) => r.status === "failed").length;
@@ -490,15 +594,39 @@ export async function runAnalysis(runId: string): Promise<void> {
       }
     }
 
+    console.log(`[Job] ===== 2단계 완료: 커밋 수집 결과 =====`);
+    console.log(`[Job]   - 성공: ${successfulScans}/${repos.length}`);
+    console.log(`[Job]   - 실패: ${failedScans}/${repos.length}`);
+
     if (await checkCancelled()) {
       console.log(`[Job] Analysis ${runId} was cancelled`);
       return;
     }
 
+    // 커밋 수집 완료 검증
+    console.log(`[Job] ===== 2단계 검증: 커밋 수집 완료 확인 =====`);
+    const verification = await verifyCommitCollection(runId);
+
+    if (!verification.success) {
+      if (verification.collectedCommits === 0) {
+        throw new Error(
+          `커밋이 수집되지 않았습니다. (완료: ${verification.completedRepos}/${verification.totalRepos})`
+        );
+      } else {
+        console.warn(
+          `[Job] ⚠️ 일부 리포 처리 실패했지만 ${verification.collectedCommits}개 커밋이 수집되어 진행합니다.`
+        );
+      }
+    } else {
+      console.log(`[Job] ✅ 커밋 수집 검증 완료: ${verification.collectedCommits}개 커밋 수집됨`);
+    }
+
     // 3단계: Work Unit 생성
     await buildWorkUnits(runId);
 
-    console.log(`[Job] Analysis ${runId} completed (awaiting AI confirmation)`);
+    console.log(`[Job] =============================================`);
+    console.log(`[Job] ✅ 분석 완료 (AI 리뷰 대기 중): ${runId}`);
+    console.log(`[Job] =============================================`);
   } catch (error) {
     console.error(`[Job] Analysis ${runId} failed:`, error);
     await db.analysisRun.update({

@@ -7,11 +7,16 @@ export class OpenAIProvider implements LLMProvider {
   private client: OpenAI;
   private model: string;
 
-  constructor(model: string = "gpt-5.1") {
+  constructor(model: string = "gpt-4o") {
     this.client = new OpenAI({
       apiKey: process.env.OPENAI_API_KEY,
     });
     this.model = model;
+  }
+
+  // o1/o3 시리즈 모델인지 확인 (system role, temperature 미지원)
+  private isReasoningModel(): boolean {
+    return this.model.startsWith("o1") || this.model.startsWith("o3");
   }
 
   async generateReview(input: ReviewInput): Promise<ReviewResult> {
@@ -32,15 +37,21 @@ export class OpenAIProvider implements LLMProvider {
       teamStandards: input.context.teamStandards,
     });
 
+    // reasoning 모델은 system role, temperature 미지원
+    const isReasoning = this.isReasoningModel();
+
     const response = await this.client.chat.completions.create({
       model: this.model,
-      messages: [
-        { role: "system", content: SYSTEM_PROMPT },
-        { role: "user", content: prompt },
-      ],
+      messages: isReasoning
+        ? [{ role: "user", content: `${SYSTEM_PROMPT}\n\n${prompt}` }]
+        : [
+          { role: "system", content: SYSTEM_PROMPT },
+          { role: "user", content: prompt },
+        ],
       response_format: { type: "json_object" },
-      temperature: 0.3,
-      max_tokens: 1000,
+      // 최신 OpenAI API는 max_completion_tokens 사용 (max_tokens는 deprecated)
+      max_completion_tokens: 1000,
+      ...(isReasoning ? {} : { temperature: 0.3 }),
     });
 
     const content = response.choices[0]?.message?.content;

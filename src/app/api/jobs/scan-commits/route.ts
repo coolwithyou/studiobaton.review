@@ -17,9 +17,6 @@ export async function POST(request: NextRequest) {
     // 1. 분석 실행 및 저장소 조회
     const run = await db.analysisRun.findUnique({
       where: { id: runId },
-      include: {
-        targetUsers: true,
-      },
     });
 
     if (!run) {
@@ -41,103 +38,98 @@ export async function POST(request: NextRequest) {
 
     // 3. GitHub API로 커밋 조회
     const octokit = await getInstallationOctokit(installationId);
-    const targetLogins = run.targetUsers.map((u) => u.userLogin);
+    const authorLogin = run.userLogin; // 단일 사용자
 
     let totalCommits = 0;
     let savedCommits = 0;
 
-    // 각 사용자별로 커밋 조회
-    for (const authorLogin of targetLogins) {
-      try {
-        const commits = await getCommits(octokit, {
-          owner,
-          repo: repoName,
-          since,
-          until,
-          author: authorLogin,
-        });
+    // 단일 사용자의 커밋 조회
+    try {
+      // GitHubUser 확인/생성
+      await db.gitHubUser.upsert({
+        where: { login: authorLogin },
+        create: { login: authorLogin },
+        update: {},
+      });
 
-        totalCommits += commits.length;
+      const commits = await getCommits(octokit, {
+        owner,
+        repo: repoName,
+        since,
+        until,
+        author: authorLogin,
+      });
 
-        // 커밋 상세 정보 조회 및 저장
-        for (const commit of commits) {
-          try {
-            // GitHubUser 확인/생성
-            await db.gitHubUser.upsert({
-              where: { login: authorLogin },
-              create: {
-                login: authorLogin,
-                email: commit.authorEmail,
-              },
-              update: {},
-            });
+      totalCommits = commits.length;
 
-            // 커밋 상세 조회 (파일 변경 정보)
-            const details = await getCommitDetails(
-              octokit,
-              owner,
-              repoName,
-              commit.sha
-            );
+      // 커밋 상세 정보 조회 및 저장
+      for (const commit of commits) {
+        try {
+          // 커밋 상세 조회 (파일 변경 정보)
+          const details = await getCommitDetails(
+            octokit,
+            owner,
+            repoName,
+            commit.sha
+          );
 
-            // 커밋 저장
-            const savedCommit = await db.commit.upsert({
-              where: {
-                repoId_sha: {
-                  repoId: repo.id,
-                  sha: commit.sha,
-                },
-              },
-              create: {
+          // 커밋 저장
+          const savedCommit = await db.commit.upsert({
+            where: {
+              repoId_sha: {
                 repoId: repo.id,
                 sha: commit.sha,
-                authorLogin,
-                authorEmail: commit.authorEmail,
-                message: commit.message,
-                committedAt: new Date(commit.committedAt || Date.now()),
-                additions: details.stats.additions,
-                deletions: details.stats.deletions,
-                filesChanged: details.files.length,
+              },
+            },
+            create: {
+              repoId: repo.id,
+              sha: commit.sha,
+              authorLogin,
+              authorEmail: commit.authorEmail,
+              message: commit.message,
+              committedAt: new Date(commit.committedAt || Date.now()),
+              additions: details.stats.additions,
+              deletions: details.stats.deletions,
+              filesChanged: details.files.length,
+            },
+            update: {
+              additions: details.stats.additions,
+              deletions: details.stats.deletions,
+              filesChanged: details.files.length,
+            },
+          });
+
+          // 파일 변경 정보 저장
+          for (const file of details.files) {
+            await db.commitFile.upsert({
+              where: {
+                id: `${savedCommit.id}-${file.path}`,
+              },
+              create: {
+                id: `${savedCommit.id}-${file.path}`,
+                commitId: savedCommit.id,
+                path: file.path,
+                status: file.status || "modified",
+                additions: file.additions,
+                deletions: file.deletions,
               },
               update: {
-                additions: details.stats.additions,
-                deletions: details.stats.deletions,
-                filesChanged: details.files.length,
+                status: file.status || "modified",
+                additions: file.additions,
+                deletions: file.deletions,
               },
             });
-
-            // 파일 변경 정보 저장
-            for (const file of details.files) {
-              await db.commitFile.upsert({
-                where: {
-                  id: `${savedCommit.id}-${file.path}`,
-                },
-                create: {
-                  id: `${savedCommit.id}-${file.path}`,
-                  commitId: savedCommit.id,
-                  path: file.path,
-                  status: file.status || "modified",
-                  additions: file.additions,
-                  deletions: file.deletions,
-                },
-                update: {
-                  status: file.status || "modified",
-                  additions: file.additions,
-                  deletions: file.deletions,
-                },
-              });
-            }
-
-            savedCommits++;
-          } catch (commitError) {
-            console.error(`Error processing commit ${commit.sha}:`, commitError);
-            // 개별 커밋 실패는 계속 진행
           }
+
+          savedCommits++;
+        } catch (commitError) {
+          console.error(`Error processing commit ${commit.sha}:`, commitError);
+          // 개별 커밋 실패는 계속 진행
         }
-      } catch (userError) {
-        console.error(`Error fetching commits for ${authorLogin}:`, userError);
-        // 개별 사용자 실패는 계속 진행
       }
+    } catch (error) {
+      console.error(`Error fetching commits for ${authorLogin}:`, error);
+      throw error;
     }
 
     // 4. 진행률 업데이트

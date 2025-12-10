@@ -30,7 +30,6 @@ export async function GET(
             },
           },
         },
-        targetUsers: true,
         _count: {
           select: { workUnits: true },
         },
@@ -56,7 +55,7 @@ export async function GET(
     const totalCommits = await db.commit.count({
       where: {
         repo: { orgId: run.orgId },
-        authorLogin: { in: run.targetUsers.map((u) => u.userLogin) },
+        authorLogin: run.userLogin,
         committedAt: {
           gte: new Date(`${run.year}-01-01`),
           lte: new Date(`${run.year}-12-31T23:59:59`),
@@ -91,7 +90,7 @@ export async function GET(
         totalCommits,
         totalWorkUnits,
         sampleSize,
-        targetUsers: run.targetUsers.length,
+        targetUsers: 1, // 단일 사용자
       },
       tokenEstimate: {
         inputTokens: estimatedInputTokens,

@@ -26,7 +26,6 @@ export async function POST(request: NextRequest) {
     const run = await db.analysisRun.findUnique({
       where: { id: runId },
       include: {
-        targetUsers: true,
         org: {
           include: {
             repos: {
@@ -53,32 +52,33 @@ export async function POST(request: NextRequest) {
     const impactConfig: Partial<ImpactConfig> = options?.impactConfig || {};
 
     let totalWorkUnits = 0;
-    const targetLogins = run.targetUsers.map((u) => u.userLogin);
+    const userLogin = run.userLogin; // 단일 사용자
 
-    // 3. 각 사용자별로 Work Unit 생성
-    for (const userLogin of targetLogins) {
-      // 해당 연도의 커밋 조회 (파일 정보 포함)
-      const commits = await db.commit.findMany({
-        where: {
-          authorLogin: userLogin,
-          repo: {
-            orgId: run.orgId,
-          },
-          committedAt: {
-            gte: new Date(`${run.year}-01-01`),
-            lte: new Date(`${run.year}-12-31T23:59:59`),
-          },
+    // 3. 단일 사용자에 대해 Work Unit 생성
+    // 해당 연도의 커밋 조회 (파일 정보 포함)
+    const commits = await db.commit.findMany({
+      where: {
+        authorLogin: userLogin,
+        repo: {
+          orgId: run.orgId,
         },
-        include: {
-          files: true,
-          repo: {
-            select: { id: true, fullName: true },
-          },
+        committedAt: {
+          gte: new Date(`${run.year}-01-01`),
+          lte: new Date(`${run.year}-12-31T23:59:59`),
         },
-        orderBy: { committedAt: "asc" },
-      });
+      },
+      include: {
+        files: true,
+        repo: {
+          select: { id: true, fullName: true },
+        },
+      },
+      orderBy: { committedAt: "asc" },
+    });
 
-      if (commits.length === 0) continue;
+    if (commits.length === 0) {
+      console.warn(`No commits found for user ${userLogin}`);
+    } else {
 
       // 핫스팟 파일 계산
       const hotspotFiles = calculateHotspotFiles(commits);
