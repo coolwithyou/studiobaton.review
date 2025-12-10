@@ -10,16 +10,16 @@ export * from "./prompts";
 // LLM Provider 팩토리
 // ============================================
 
-export type LLMModelType = "gpt-4o" | "claude-3-5-sonnet";
+export type LLMModelType = "gpt-5.1" | "claude-4-5-sonnet";
 
 export function createLLMProvider(model: LLMModelType): LLMProvider {
   switch (model) {
-    case "gpt-4o":
-      return new OpenAIProvider("gpt-4o");
-    case "claude-3-5-sonnet":
-      return new AnthropicProvider("claude-3-5-sonnet-20241022");
+    case "gpt-5.1":
+      return new OpenAIProvider("gpt-5.1");
+    case "claude-4-5-sonnet":
+      return new AnthropicProvider("claude-sonnet-4-5@20250929");
     default:
-      return new OpenAIProvider("gpt-4o");
+      return new OpenAIProvider("gpt-5.1");
   }
 }
 

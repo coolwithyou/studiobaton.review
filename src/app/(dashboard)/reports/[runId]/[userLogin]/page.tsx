@@ -7,14 +7,16 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Separator } from "@/components/ui/separator";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { db } from "@/lib/db";
+import { getUser } from "@/lib/session";
 import { ReportStats, ReviewResult, ImpactFactors } from "@/types";
 import { ActivityChart } from "@/components/charts/activity-chart";
 import { WorkTypeChart } from "@/components/charts/work-type-chart";
 import { RepoContributionChart } from "@/components/charts/repo-contribution-chart";
 import { ImpactRadarChart } from "@/components/charts/impact-radar-chart";
+import { ManagerNotesEditor } from "@/components/reports/manager-notes-editor";
+import { PdfDownloadButton } from "@/components/reports/pdf-download-button";
 import {
   ArrowLeft,
-  Download,
   CheckCircle2,
   Sparkles,
   TrendingUp,
@@ -31,6 +33,7 @@ export default async function UserReportPage({
   params: Promise<{ runId: string; userLogin: string }>;
 }) {
   const { runId, userLogin } = await params;
+  const currentUser = await getUser();
 
   const report = await db.yearlyReport.findUnique({
     where: {
@@ -38,7 +41,17 @@ export default async function UserReportPage({
     },
     include: {
       run: {
-        include: { org: true },
+        include: {
+          org: {
+            include: {
+              members: currentUser
+                ? {
+                    where: { userId: currentUser.id },
+                  }
+                : false,
+            },
+          },
+        },
       },
       user: true,
     },
@@ -49,6 +62,7 @@ export default async function UserReportPage({
   }
 
   const stats = report.stats as unknown as ReportStats;
+  const isAdmin = report.run.org.members?.[0]?.role === "ADMIN";
 
   // Work Units 조회 (AI 리뷰 포함)
   const workUnits = await db.workUnit.findMany({
@@ -100,10 +114,11 @@ export default async function UserReportPage({
                 확정됨
               </Badge>
             )}
-            <Button variant="outline">
-              <Download className="mr-2 h-4 w-4" />
-              PDF 다운로드
-            </Button>
+            <PdfDownloadButton
+              reportId={report.id}
+              userLogin={report.userLogin}
+              year={report.year}
+            />
           </div>
         </div>
       </div>
@@ -130,7 +145,7 @@ export default async function UserReportPage({
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-3xl font-bold">{stats.totalCommits}</div>
+            <div className="text-3xl font-bold">{stats?.totalCommits || 0}</div>
           </CardContent>
         </Card>
         <Card>
@@ -140,7 +155,7 @@ export default async function UserReportPage({
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-3xl font-bold">{stats.totalWorkUnits}</div>
+            <div className="text-3xl font-bold">{stats?.totalWorkUnits || 0}</div>
           </CardContent>
         </Card>
         <Card>
@@ -150,7 +165,7 @@ export default async function UserReportPage({
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-3xl font-bold">{stats.avgImpactScore}</div>
+            <div className="text-3xl font-bold">{stats?.avgImpactScore?.toFixed(1) || 0}</div>
           </CardContent>
         </Card>
         <Card>
@@ -161,9 +176,9 @@ export default async function UserReportPage({
           </CardHeader>
           <CardContent>
             <div className="text-xl font-bold">
-              <span className="text-green-600">+{stats.totalAdditions.toLocaleString()}</span>
+              <span className="text-green-600">+{(stats?.totalAdditions || 0).toLocaleString()}</span>
               {" / "}
-              <span className="text-red-600">-{stats.totalDeletions.toLocaleString()}</span>
+              <span className="text-red-600">-{(stats?.totalDeletions || 0).toLocaleString()}</span>
             </div>
           </CardContent>
         </Card>
@@ -243,7 +258,7 @@ export default async function UserReportPage({
               <CardTitle>월별 활동 추이</CardTitle>
             </CardHeader>
             <CardContent>
-              <ActivityChart data={stats.monthlyActivity} />
+              <ActivityChart data={stats?.monthlyActivity || []} />
             </CardContent>
           </Card>
         </TabsContent>
@@ -254,7 +269,7 @@ export default async function UserReportPage({
               <CardTitle>작업 유형 분포</CardTitle>
             </CardHeader>
             <CardContent>
-              <WorkTypeChart data={stats.workTypeDistribution} />
+              <WorkTypeChart data={stats?.workTypeDistribution || {}} />
             </CardContent>
           </Card>
         </TabsContent>
@@ -265,100 +280,90 @@ export default async function UserReportPage({
               <CardTitle>저장소별 기여도</CardTitle>
             </CardHeader>
             <CardContent>
-              <RepoContributionChart data={stats.topRepos} />
+              <RepoContributionChart data={stats?.topRepos || []} />
             </CardContent>
           </Card>
         </TabsContent>
       </Tabs>
 
       {/* 대표 작업 (AI 리뷰) */}
-      <Card>
-        <CardHeader>
-          <CardTitle>대표 작업 (AI 리뷰)</CardTitle>
-          <CardDescription>
-            임팩트가 높은 작업들의 AI 분석 결과입니다.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <div className="space-y-4">
-            {workUnits.map((wu) => {
-              const review = wu.aiReview?.result as ReviewResult | undefined;
-              return (
-                <div
-                  key={wu.id}
-                  className="rounded-lg border p-4"
-                >
-                  <div className="flex items-start justify-between mb-3">
-                    <div>
-                      <h4 className="font-medium">{wu.summary}</h4>
-                      <p className="text-sm text-muted-foreground">
-                        {wu.repo.name} · {wu.commitCount}개 커밋 ·{" "}
-                        {format(wu.startAt, "MM/dd", { locale: ko })} ~{" "}
-                        {format(wu.endAt, "MM/dd", { locale: ko })}
-                      </p>
-                    </div>
-                    <Badge variant="outline">
-                      임팩트 {wu.impactScore.toFixed(1)}
-                    </Badge>
-                  </div>
-
-                  {review && (
-                    <>
-                      <Separator className="my-3" />
-                      <div className="grid gap-4 md:grid-cols-2">
-                        <div>
-                          <p className="text-sm font-medium mb-2">강점</p>
-                          <ul className="text-sm text-muted-foreground space-y-1">
-                            {review.strengths.map((s, i) => (
-                              <li key={i}>• {s}</li>
-                            ))}
-                          </ul>
-                        </div>
-                        <div>
-                          <p className="text-sm font-medium mb-2">개선 제안</p>
-                          <ul className="text-sm text-muted-foreground space-y-1">
-                            {review.suggestions.map((s, i) => (
-                              <li key={i}>• {s}</li>
-                            ))}
-                          </ul>
-                        </div>
+      {workUnits.length > 0 && (
+        <Card className="mb-8">
+          <CardHeader>
+            <CardTitle>대표 작업 (AI 리뷰)</CardTitle>
+            <CardDescription>
+              임팩트가 높은 작업들의 AI 분석 결과입니다.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-4">
+              {workUnits.map((wu) => {
+                const review = wu.aiReview?.result as ReviewResult | undefined;
+                return (
+                  <div
+                    key={wu.id}
+                    className="rounded-lg border p-4"
+                  >
+                    <div className="flex items-start justify-between mb-3">
+                      <div>
+                        <h4 className="font-medium">{wu.summary || "작업 단위"}</h4>
+                        <p className="text-sm text-muted-foreground">
+                          {wu.repo.name} · {wu.commitCount}개 커밋 ·{" "}
+                          {format(wu.startAt, "MM/dd", { locale: ko })} ~{" "}
+                          {format(wu.endAt, "MM/dd", { locale: ko })}
+                        </p>
                       </div>
-                      {wu.impactFactors && (
-                        <div className="mt-4">
-                          <p className="text-sm font-medium mb-2">임팩트 분석</p>
-                          <ImpactRadarChart data={wu.impactFactors as unknown as ImpactFactors} />
-                        </div>
-                      )}
-                    </>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        </CardContent>
-      </Card>
+                      <Badge variant="outline">
+                        임팩트 {wu.impactScore.toFixed(1)}
+                      </Badge>
+                    </div>
 
-      {/* 매니저 코멘트 */}
-      <Card className="mt-8">
-        <CardHeader>
-          <CardTitle>매니저 코멘트</CardTitle>
-          <CardDescription>
-            리포트를 검토하고 코멘트를 추가하세요.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          {report.managerNotes ? (
-            <p className="whitespace-pre-wrap">{report.managerNotes}</p>
-          ) : (
-            <p className="text-muted-foreground">아직 코멘트가 없습니다.</p>
-          )}
-          <div className="mt-4 flex gap-2">
-            <Button variant="outline">코멘트 수정</Button>
-            {!report.isFinalized && <Button>리포트 확정</Button>}
-          </div>
-        </CardContent>
-      </Card>
+                    {review && (
+                      <>
+                        <Separator className="my-3" />
+                        <div className="grid gap-4 md:grid-cols-2">
+                          <div>
+                            <p className="text-sm font-medium mb-2">강점</p>
+                            <ul className="text-sm text-muted-foreground space-y-1">
+                              {review.strengths?.map((s, i) => (
+                                <li key={i}>• {s}</li>
+                              ))}
+                            </ul>
+                          </div>
+                          <div>
+                            <p className="text-sm font-medium mb-2">개선 제안</p>
+                            <ul className="text-sm text-muted-foreground space-y-1">
+                              {review.suggestions?.map((s, i) => (
+                                <li key={i}>• {s}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        </div>
+                        {wu.impactFactors && (
+                          <div className="mt-4">
+                            <p className="text-sm font-medium mb-2">임팩트 분석</p>
+                            <ImpactRadarChart data={wu.impactFactors as unknown as ImpactFactors} />
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* 매니저 코멘트 에디터 */}
+      <ManagerNotesEditor
+        reportId={report.id}
+        initialNotes={report.managerNotes}
+        isFinalized={report.isFinalized}
+        finalizedAt={report.finalizedAt?.toISOString()}
+        finalizedBy={report.finalizedBy}
+        isAdmin={isAdmin}
+      />
     </div>
   );
 }
-

@@ -3,37 +3,22 @@ import { notFound } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Progress } from "@/components/ui/progress";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { db } from "@/lib/db";
 import { ReportStats } from "@/types";
 import { ActivityChart } from "@/components/charts/activity-chart";
 import { WorkTypeChart } from "@/components/charts/work-type-chart";
-import { RepoContributionChart } from "@/components/charts/repo-contribution-chart";
+import { ProgressMonitor } from "@/components/analysis/progress-monitor";
 import {
   ArrowLeft,
-  Users,
   GitCommit,
   Layers,
-  Clock,
   CheckCircle2,
-  AlertCircle,
   FileText,
   BarChart3,
 } from "lucide-react";
 import { format } from "date-fns";
 import { ko } from "date-fns/locale";
-
-const statusConfig = {
-  QUEUED: { label: "대기중", color: "bg-gray-500" },
-  SCANNING_REPOS: { label: "저장소 스캔", color: "bg-blue-500" },
-  SCANNING_COMMITS: { label: "커밋 수집", color: "bg-blue-500" },
-  BUILDING_UNITS: { label: "분석중", color: "bg-yellow-500" },
-  REVIEWING: { label: "AI 리뷰", color: "bg-purple-500" },
-  FINALIZING: { label: "완료 중", color: "bg-orange-500" },
-  DONE: { label: "완료", color: "bg-green-500" },
-  FAILED: { label: "실패", color: "bg-red-500" },
-};
 
 export default async function AnalysisDetailPage({
   params,
@@ -46,7 +31,7 @@ export default async function AnalysisDetailPage({
     where: { id: runId },
     include: {
       org: true,
-      targetUsers: true,
+      user: true,
       reports: {
         include: {
           user: true,
@@ -70,11 +55,6 @@ export default async function AnalysisDetailPage({
     failed: number;
   } | null;
 
-  const percentage = progress?.total
-    ? Math.round((progress.completed / progress.total) * 100)
-    : 0;
-
-  const status = statusConfig[run.status];
   const isRunning = !["DONE", "FAILED"].includes(run.status);
 
   // 전체 통계 집계
@@ -105,54 +85,27 @@ export default async function AnalysisDetailPage({
         <div className="flex items-start justify-between">
           <div>
             <h1 className="text-3xl font-bold">
-              {run.org.name || run.org.login} - {run.year}년 분석
+              {run.user.name || run.userLogin} - {run.year}년 분석
             </h1>
             <p className="mt-2 text-muted-foreground">
-              {format(run.createdAt, "yyyy년 MM월 dd일 HH:mm", { locale: ko })} 시작
+              {run.org.name || run.org.login} • {format(run.createdAt, "yyyy년 MM월 dd일 HH:mm", { locale: ko })} 시작
             </p>
           </div>
-          <Badge
-            variant="outline"
-            className={`${status.color} text-white border-0`}
-          >
-            {isRunning ? (
-              <Clock className="mr-1 h-3 w-3 animate-spin" />
-            ) : run.status === "DONE" ? (
-              <CheckCircle2 className="mr-1 h-3 w-3" />
-            ) : (
-              <AlertCircle className="mr-1 h-3 w-3" />
-            )}
-            {status.label}
-          </Badge>
         </div>
       </div>
 
-      {/* Progress (진행 중인 경우) */}
-      {isRunning && (
-        <Card className="mb-8">
-          <CardHeader>
-            <CardTitle className="text-lg">진행 상황</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <Progress value={percentage} className="mb-2" />
-            <p className="text-sm text-muted-foreground">
-              {progress?.completed || 0} / {progress?.total || 0} 완료 ({percentage}%)
-            </p>
-          </CardContent>
-        </Card>
+      {/* Progress Monitor (진행 중인 경우 또는 실패한 경우) */}
+      {(isRunning || run.status === "FAILED") && (
+        <ProgressMonitor
+          runId={runId}
+          initialStatus={run.status}
+          initialProgress={progress}
+          targetUser={run.userLogin}
+        />
       )}
 
       {/* 통계 카드 */}
-      <div className="mb-8 grid gap-4 md:grid-cols-4">
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium">대상 사용자</CardTitle>
-            <Users className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{run.targetUsers.length}명</div>
-          </CardContent>
-        </Card>
+      <div className="mb-8 grid gap-4 md:grid-cols-3">
         <Card>
           <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-sm font-medium">총 커밋</CardTitle>
@@ -290,19 +243,18 @@ export default async function AnalysisDetailPage({
         </Tabs>
       )}
 
-      {/* 오류 표시 */}
-      {run.status === "FAILED" && run.error && (
-        <Card className="border-destructive">
-          <CardHeader>
-            <CardTitle className="text-destructive">오류 발생</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <p className="text-sm">{run.error}</p>
-            <Button className="mt-4">재시도</Button>
+      {/* 완료 상태 안내 */}
+      {run.status === "DONE" && run.reports.length === 0 && (
+        <Card>
+          <CardContent className="flex flex-col items-center justify-center py-12">
+            <FileText className="mb-4 h-12 w-12 text-muted-foreground" />
+            <h3 className="mb-2 text-lg font-semibold">리포트가 없습니다</h3>
+            <p className="text-muted-foreground">
+              분석은 완료되었으나 생성된 리포트가 없습니다.
+            </p>
           </CardContent>
         </Card>
       )}
     </div>
   );
 }
-

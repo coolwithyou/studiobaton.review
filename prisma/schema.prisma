@@ -107,9 +107,10 @@ model GitHubUser {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  commits   Commit[]
-  workUnits WorkUnit[]
-  reports   YearlyReport[]
+  commits      Commit[]
+  workUnits    WorkUnit[]
+  reports      YearlyReport[]
+  analysisRuns AnalysisRun[]
 }
 
 // ============================================
@@ -117,27 +118,29 @@ model GitHubUser {
 // ============================================
 
 model AnalysisRun {
-  id         String    @id @default(cuid())
-  orgId      String
-  year       Int
-  status     RunStatus @default(QUEUED)
-  progress   Json?     // { total: N, completed: M, failed: K }
-  options    Json      // 분석 옵션 스냅샷
-  error      String?
-  startedAt  DateTime?
-  finishedAt DateTime?
-  createdAt  DateTime  @default(now())
+  id          String    @id @default(cuid())
+  orgId       String
+  userLogin   String    // 단일 대상 사용자
+  year        Int
+  status      RunStatus @default(QUEUED)
+  progress    Json?     // { total: N, completed: M, failed: K }
+  options     Json      // 분석 옵션 스냅샷
+  error       String?
+  startedAt   DateTime?
+  finishedAt  DateTime?
+  createdAt   DateTime  @default(now())
   createdById String?
 
-  org         Organization      @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  createdBy   User?             @relation("CreatedBy", fields: [createdById], references: [id])
-  targetUsers AnalysisRunUser[]
-  workUnits   WorkUnit[]
-  reports     YearlyReport[]
-  jobLogs     JobLog[]
+  org       Organization   @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user      GitHubUser     @relation(fields: [userLogin], references: [login])
+  createdBy User?          @relation("CreatedBy", fields: [createdById], references: [id])
+  workUnits WorkUnit[]
+  reports   YearlyReport[]
+  jobLogs   JobLog[]
 
-  @@unique([orgId, year])
+  @@unique([orgId, userLogin, year])
   @@index([status])
+  @@index([userLogin])
 }
 
 enum RunStatus {
@@ -145,19 +148,11 @@ enum RunStatus {
   SCANNING_REPOS
   SCANNING_COMMITS
   BUILDING_UNITS
+  AWAITING_AI_CONFIRMATION
   REVIEWING
   FINALIZING
   DONE
   FAILED
-}
-
-model AnalysisRunUser {
-  runId     String
-  userLogin String
-
-  run AnalysisRun @relation(fields: [runId], references: [id], onDelete: Cascade)
-
-  @@id([runId, userLogin])
 }
 
 // ============================================

@@ -1,11 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSession } from "@/lib/session";
 import { db } from "@/lib/db";
+import { runAnalysis } from "@/lib/jobs/runner-optimized";
+import { RestartMode, analyzeResumeState } from "@/lib/jobs/resume-handler";
 import { AnalysisOptions } from "@/types";
-// import { Client } from "@upstash/qstash"; // QStash 연동 시 활성화
-
-// QStash 클라이언트 (실제 구현 시 활성화)
-// const qstash = new Client({ token: process.env.QSTASH_TOKEN! });
+import type { AnalysisRun } from "@prisma/client";
 
 interface StartAnalysisRequest {
   orgLogin: string;
@@ -53,24 +52,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // 5. 기존 분석 확인 (같은 연도)
-    const existingRun = await db.analysisRun.findUnique({
-      where: {
-        orgId_year: {
-          orgId: org.id,
-          year,
-        },
-      },
-    });
-
-    if (existingRun && existingRun.status !== "FAILED") {
-      return NextResponse.json(
-        { error: "Analysis for this year already exists.", runId: existingRun.id },
-        { status: 409 }
-      );
-    }
-
-    // 6. GitHubUser 레코드 확인/생성
+    // 5. GitHubUser 레코드 확인/생성
     for (const login of userLogins) {
       await db.gitHubUser.upsert({
         where: { login },
@@ -79,86 +61,200 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    // 7. AnalysisRun 생성
-    const analysisRun = await db.analysisRun.upsert({
-      where: {
-        orgId_year: {
-          orgId: org.id,
-          year,
-        },
-      },
-      create: {
-        orgId: org.id,
-        year,
-        status: "QUEUED",
-        options: {
-          llmModel: options.llmModel || "gpt-4o",
-          includeArchived: options.includeArchived || false,
-          excludeRepos: options.excludeRepos || [],
-          clusteringConfig: options.clusteringConfig || {},
-          impactConfig: options.impactConfig || {},
-        },
-        createdById: session.user.id,
-        progress: {
-          total: 0,
-          completed: 0,
-          failed: 0,
-          phase: "QUEUED",
-        },
-        targetUsers: {
-          createMany: {
-            data: userLogins.map((login) => ({ userLogin: login })),
+    // 6. 각 사용자별로 독립적인 AnalysisRun 생성
+    const createdRuns: { runId: string; userLogin: string; status: string }[] = [];
+    const errors: { userLogin: string; error: string }[] = [];
+
+    for (const userLogin of userLogins) {
+      try {
+        // 기존 분석 확인 (조직 + 사용자 + 연도)
+        const existingRun = await db.analysisRun.findUnique({
+          where: {
+            orgId_userLogin_year: {
+              orgId: org.id,
+              userLogin,
+              year,
+            },
           },
-        },
-      },
-      update: {
-        status: "QUEUED",
-        error: null,
-        startedAt: null,
-        finishedAt: null,
-        options: {
-          llmModel: options.llmModel || "gpt-4o",
-          includeArchived: options.includeArchived || false,
-          excludeRepos: options.excludeRepos || [],
-          clusteringConfig: options.clusteringConfig || {},
-          impactConfig: options.impactConfig || {},
-        },
-        progress: {
-          total: 0,
-          completed: 0,
-          failed: 0,
-          phase: "QUEUED",
-        },
-      },
-    });
+        });
 
-    // 8. QStash에 첫 번째 Job 등록 (org_scan_repos)
-    // 실제 구현 시 활성화
-    /*
-    await qstash.publishJSON({
-      url: `${process.env.NEXT_PUBLIC_APP_URL}/api/jobs/scan-repos`,
-      body: {
-        runId: analysisRun.id,
-        orgLogin,
-        installationId: org.installationId,
-      },
-    });
-    */
+        // 재시작 가능한 상태: FAILED, DONE, AWAITING_AI_CONFIRMATION
+        const canRestart = ["FAILED", "DONE", "AWAITING_AI_CONFIRMATION"].includes(
+          existingRun?.status || ""
+        );
 
-    // 임시: 직접 상태 업데이트 (개발용)
-    await db.analysisRun.update({
-      where: { id: analysisRun.id },
-      data: {
-        status: "SCANNING_REPOS",
-        startedAt: new Date(),
-      },
-    });
+        if (existingRun && !canRestart) {
+          errors.push({
+            userLogin,
+            error: `분석이 진행 중입니다 (상태: ${existingRun.status})`,
+          });
+          continue;
+        }
+
+        let analysisRun: AnalysisRun;
+
+        if (existingRun && ["FAILED", "AWAITING_AI_CONFIRMATION"].includes(existingRun.status)) {
+          // 실패하거나 AI 대기 중인 분석 재시작
+          const resumeState = await analyzeResumeState(existingRun.id);
+          
+          console.log(
+            `[Start] Restarting ${existingRun.status} analysis for ${userLogin} - ${resumeState.stats.totalCommits} commits`
+          );
+
+          analysisRun = await db.analysisRun.update({
+            where: { id: existingRun.id },
+            data: {
+              status: "QUEUED",
+              error: null,
+              startedAt: null,
+              finishedAt: null,
+              options: {
+                llmModel: options.llmModel || "gpt-4o",
+                includeArchived: options.includeArchived || false,
+                excludeRepos: options.excludeRepos || [],
+                clusteringConfig: options.clusteringConfig || {},
+                impactConfig: options.impactConfig || {},
+              },
+            },
+          });
+
+          // Work Unit과 Report만 정리 (커밋 데이터는 유지)
+          await db.workUnitCommit.deleteMany({
+            where: { workUnit: { runId: existingRun.id } },
+          });
+          await db.aiReview.deleteMany({
+            where: { workUnit: { runId: existingRun.id } },
+          });
+          await db.workUnit.deleteMany({
+            where: { runId: existingRun.id },
+          });
+          await db.yearlyReport.deleteMany({
+            where: { runId: existingRun.id },
+          });
+
+          // 재시작 모드로 분석 실행
+          runAnalysis(analysisRun.id, RestartMode.RESUME).catch((error) => {
+            console.error(`[Analysis] Background job failed for ${analysisRun.id}:`, error);
+          });
+
+          createdRuns.push({
+            runId: analysisRun.id,
+            userLogin,
+            status: "resumed",
+          });
+        } else if (existingRun && existingRun.status === "DONE") {
+          // 완료된 분석 재실행 (새로 시작)
+          await db.workUnitCommit.deleteMany({
+            where: { workUnit: { runId: existingRun.id } },
+          });
+          await db.aiReview.deleteMany({
+            where: { workUnit: { runId: existingRun.id } },
+          });
+          await db.workUnit.deleteMany({
+            where: { runId: existingRun.id },
+          });
+          await db.yearlyReport.deleteMany({
+            where: { runId: existingRun.id },
+          });
+          await db.jobLog.deleteMany({
+            where: { runId: existingRun.id },
+          });
+
+          analysisRun = await db.analysisRun.update({
+            where: { id: existingRun.id },
+            data: {
+              status: "QUEUED",
+              error: null,
+              startedAt: null,
+              finishedAt: null,
+              options: {
+                llmModel: options.llmModel || "gpt-4o",
+                includeArchived: options.includeArchived || false,
+                excludeRepos: options.excludeRepos || [],
+                clusteringConfig: options.clusteringConfig || {},
+                impactConfig: options.impactConfig || {},
+              },
+              progress: {
+                total: 0,
+                completed: 0,
+                failed: 0,
+                phase: "QUEUED",
+                repoProgress: [],
+              },
+              createdById: session.user.id,
+            },
+          });
+
+          runAnalysis(analysisRun.id, RestartMode.FULL_RESTART).catch((error) => {
+            console.error(`[Analysis] Background job failed for ${analysisRun.id}:`, error);
+          });
+
+          createdRuns.push({
+            runId: analysisRun.id,
+            userLogin,
+            status: "restarted",
+          });
+        } else {
+          // 새 분석 생성
+          analysisRun = await db.analysisRun.create({
+            data: {
+              orgId: org.id,
+              userLogin,
+              year,
+              status: "QUEUED",
+              options: {
+                llmModel: options.llmModel || "gpt-4o",
+                includeArchived: options.includeArchived || false,
+                excludeRepos: options.excludeRepos || [],
+                clusteringConfig: options.clusteringConfig || {},
+                impactConfig: options.impactConfig || {},
+              },
+              createdById: session.user.id,
+              progress: {
+                total: 0,
+                completed: 0,
+                failed: 0,
+                phase: "QUEUED",
+                repoProgress: [],
+              },
+            },
+          });
+
+          runAnalysis(analysisRun.id, RestartMode.FULL_RESTART).catch((error) => {
+            console.error(`[Analysis] Background job failed for ${analysisRun.id}:`, error);
+          });
+
+          createdRuns.push({
+            runId: analysisRun.id,
+            userLogin,
+            status: "created",
+          });
+        }
+      } catch (error) {
+        console.error(`[Start] Error creating analysis for ${userLogin}:`, error);
+        errors.push({
+          userLogin,
+          error: String(error),
+        });
+      }
+    }
+
+    // 7. 응답 반환
+    if (createdRuns.length === 0) {
+      return NextResponse.json(
+        { 
+          error: "모든 분석 생성에 실패했습니다.", 
+          details: errors,
+        },
+        { status: 400 }
+      );
+    }
 
     return NextResponse.json({
       success: true,
-      runId: analysisRun.id,
-      status: "queued",
-      estimatedTime: 15, // 예상 소요 시간 (분)
+      runs: createdRuns,
+      message: `${createdRuns.length}개의 분석이 시작되었습니다.`,
+      errors: errors.length > 0 ? errors : undefined,
     });
   } catch (error) {
     console.error("Analysis start error:", error);
@@ -168,4 +264,3 @@ export async function POST(request: NextRequest) {
     );
   }
 }
-

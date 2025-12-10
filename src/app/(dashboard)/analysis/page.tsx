@@ -1,83 +1,76 @@
 import Link from "next/link";
-import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
+import { getUser } from "@/lib/session";
+import { db } from "@/lib/db";
 import {
   Plus,
-  BarChart3,
   Clock,
   CheckCircle2,
-  AlertCircle,
-  ArrowRight,
+  XCircle,
+  Loader2,
+  FileText,
+  ChevronRight,
 } from "lucide-react";
-import { format } from "date-fns";
-import { ko } from "date-fns/locale";
+import { RunStatus } from "@prisma/client";
 
-// 임시 데이터
-const analysisRuns = [
-  {
-    id: "1",
-    orgName: "studiobaton",
-    year: 2024,
-    status: "DONE",
-    createdAt: new Date("2024-12-01"),
-    finishedAt: new Date("2024-12-01"),
-    userCount: 5,
-    totalCommits: 1234,
-    totalWorkUnits: 48,
-  },
-  {
-    id: "2",
-    orgName: "studiobaton",
-    year: 2023,
-    status: "DONE",
-    createdAt: new Date("2023-12-15"),
-    finishedAt: new Date("2023-12-15"),
-    userCount: 4,
-    totalCommits: 987,
-    totalWorkUnits: 36,
-  },
-  {
-    id: "3",
-    orgName: "studiobaton",
-    year: 2024,
-    status: "FAILED",
-    createdAt: new Date("2024-11-20"),
-    finishedAt: null,
-    userCount: 5,
-    totalCommits: 0,
-    totalWorkUnits: 0,
-    error: "Rate limit exceeded",
-  },
-];
-
-const statusConfig = {
-  QUEUED: { label: "대기중", variant: "secondary" as const, icon: Clock },
-  SCANNING_REPOS: { label: "저장소 스캔", variant: "default" as const, icon: Clock },
-  SCANNING_COMMITS: { label: "커밋 수집", variant: "default" as const, icon: Clock },
-  BUILDING_UNITS: { label: "분석중", variant: "default" as const, icon: Clock },
-  REVIEWING: { label: "AI 리뷰", variant: "default" as const, icon: Clock },
-  FINALIZING: { label: "완료 중", variant: "default" as const, icon: Clock },
-  DONE: { label: "완료", variant: "outline" as const, icon: CheckCircle2 },
-  FAILED: { label: "실패", variant: "destructive" as const, icon: AlertCircle },
+const statusConfig: Record<RunStatus, { label: string; icon: React.ElementType; variant: "default" | "secondary" | "destructive" | "outline"; spinning?: boolean }> = {
+  QUEUED: { label: "대기 중", icon: Clock, variant: "outline" },
+  SCANNING_REPOS: { label: "저장소 스캔", icon: Loader2, variant: "secondary", spinning: true },
+  SCANNING_COMMITS: { label: "커밋 수집", icon: Loader2, variant: "secondary", spinning: true },
+  BUILDING_UNITS: { label: "분석 중", icon: Loader2, variant: "secondary", spinning: true },
+  AWAITING_AI_CONFIRMATION: { label: "AI 확인 대기", icon: Clock, variant: "outline" },
+  REVIEWING: { label: "AI 리뷰", icon: Loader2, variant: "secondary", spinning: true },
+  FINALIZING: { label: "완료 중", icon: Loader2, variant: "secondary", spinning: true },
+  DONE: { label: "완료", icon: CheckCircle2, variant: "default" },
+  FAILED: { label: "실패", icon: XCircle, variant: "destructive" },
 };
 
-export default function AnalysisListPage() {
+async function getAnalysisRuns(userId: string) {
+  // 사용자가 속한 조직 목록
+  const memberships = await db.organizationMember.findMany({
+    where: { userId },
+    select: { orgId: true },
+  });
+
+  const orgIds = memberships.map((m) => m.orgId);
+
+  // 모든 분석 실행
+  const runs = await db.analysisRun.findMany({
+    where: {
+      orgId: { in: orgIds },
+    },
+    include: {
+      org: {
+        select: { login: true, name: true, avatarUrl: true },
+      },
+      user: {
+        select: { login: true, name: true },
+      },
+      _count: {
+        select: { reports: true, workUnits: true },
+      },
+    },
+    orderBy: { createdAt: "desc" },
+  });
+
+  return runs;
+}
+
+export default async function AnalysisListPage() {
+  const user = await getUser();
+  if (!user) return null;
+
+  const runs = await getAnalysisRuns(user.id);
+
   return (
     <div className="container py-8 px-4">
       <div className="mb-8 flex items-center justify-between">
         <div>
           <h1 className="text-3xl font-bold">분석 목록</h1>
           <p className="mt-2 text-muted-foreground">
-            실행한 분석 내역을 확인하고 관리합니다.
+            모든 분석 실행 기록을 확인할 수 있습니다.
           </p>
         </div>
         <Button asChild>
@@ -88,82 +81,79 @@ export default function AnalysisListPage() {
         </Button>
       </div>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>분석 기록</CardTitle>
-          <CardDescription>
-            조직별, 연도별 분석 실행 기록입니다.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          {analysisRuns.length > 0 ? (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>조직 / 연도</TableHead>
-                  <TableHead>상태</TableHead>
-                  <TableHead className="text-right">사용자</TableHead>
-                  <TableHead className="text-right">커밋</TableHead>
-                  <TableHead className="text-right">작업 묶음</TableHead>
-                  <TableHead>실행일</TableHead>
-                  <TableHead></TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {analysisRuns.map((run) => {
-                  const status = statusConfig[run.status as keyof typeof statusConfig];
-                  const StatusIcon = status.icon;
-                  return (
-                    <TableRow key={run.id}>
-                      <TableCell>
-                        <div className="flex items-center gap-2">
-                          <BarChart3 className="h-4 w-4 text-muted-foreground" />
-                          <span className="font-medium">{run.orgName}</span>
-                          <span className="text-muted-foreground">{run.year}</span>
+      {runs.length > 0 ? (
+        <div className="space-y-4">
+          {runs.map((run) => {
+            const config = statusConfig[run.status];
+            const StatusIcon = config.icon;
+
+            return (
+              <Card key={run.id} className="hover:border-primary/50 transition-colors">
+                <Link href={`/analysis/${run.id}`}>
+                  <CardHeader className="pb-2">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        <div>
+                          <CardTitle className="text-lg">
+                            {run.user.name || run.userLogin}
+                          </CardTitle>
+                          <CardDescription>
+                            {run.org.name || run.org.login} • {run.year}년 분석
+                          </CardDescription>
                         </div>
-                      </TableCell>
-                      <TableCell>
-                        <Badge variant={status.variant}>
-                          <StatusIcon className="mr-1 h-3 w-3" />
-                          {status.label}
-                        </Badge>
-                      </TableCell>
-                      <TableCell className="text-right">{run.userCount}명</TableCell>
-                      <TableCell className="text-right">
-                        {run.totalCommits.toLocaleString()}
-                      </TableCell>
-                      <TableCell className="text-right">{run.totalWorkUnits}</TableCell>
-                      <TableCell>
-                        {format(run.createdAt, "yyyy.MM.dd", { locale: ko })}
-                      </TableCell>
-                      <TableCell>
-                        <Button variant="ghost" size="sm" asChild>
-                          <Link href={`/analysis/${run.id}`}>
-                            상세
-                            <ArrowRight className="ml-1 h-4 w-4" />
-                          </Link>
-                        </Button>
-                      </TableCell>
-                    </TableRow>
-                  );
-                })}
-              </TableBody>
-            </Table>
-          ) : (
-            <div className="flex flex-col items-center justify-center py-12">
-              <BarChart3 className="mb-4 h-12 w-12 text-muted-foreground" />
-              <p className="mb-4 text-muted-foreground">아직 분석 기록이 없습니다.</p>
-              <Button asChild>
-                <Link href="/analysis/new">
-                  <Plus className="mr-2 h-4 w-4" />
-                  첫 분석 시작하기
+                      </div>
+                      <Badge variant={config.variant}>
+                        <StatusIcon
+                          className={`mr-1 h-3 w-3 ${config.spinning ? "animate-spin" : ""}`}
+                        />
+                        {config.label}
+                      </Badge>
+                    </div>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="flex items-center justify-between">
+                      <div className="flex gap-6 text-sm text-muted-foreground">
+                        <span>
+                          Work Units: {run._count.workUnits}개
+                        </span>
+                        <span>
+                          리포트: {run._count.reports}개
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-4">
+                        <span className="text-sm text-muted-foreground">
+                          {run.createdAt.toLocaleDateString("ko-KR", {
+                            year: "numeric",
+                            month: "short",
+                            day: "numeric",
+                          })}
+                        </span>
+                        <ChevronRight className="h-5 w-5 text-muted-foreground" />
+                      </div>
+                    </div>
+                  </CardContent>
                 </Link>
-              </Button>
-            </div>
-          )}
-        </CardContent>
-      </Card>
+              </Card>
+            );
+          })}
+        </div>
+      ) : (
+        <Card>
+          <CardContent className="flex flex-col items-center justify-center py-12">
+            <FileText className="mb-4 h-12 w-12 text-muted-foreground" />
+            <h3 className="mb-2 text-lg font-semibold">분석 기록이 없습니다</h3>
+            <p className="mb-4 text-center text-muted-foreground">
+              새로운 분석을 시작하여 팀의 코드 기여를 분석해보세요.
+            </p>
+            <Button asChild>
+              <Link href="/analysis/new">
+                <Plus className="mr-2 h-4 w-4" />
+                새 분석 실행
+              </Link>
+            </Button>
+          </CardContent>
+        </Card>
+      )}
     </div>
   );
 }
-

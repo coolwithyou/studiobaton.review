@@ -7,11 +7,10 @@ const globalForPrisma = globalThis as unknown as {
 export const db =
   globalForPrisma.prisma ??
   new PrismaClient({
-    log:
-      process.env.NODE_ENV === "development"
-        ? ["query", "error", "warn"]
-        : ["error"],
+    log: ["error"], // 개발 환경에서도 error만 표시
   });
 
 if (process.env.NODE_ENV !== "production") globalForPrisma.prisma = db;
+
+export default db;
 

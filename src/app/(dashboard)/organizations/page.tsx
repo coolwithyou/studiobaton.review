@@ -1,104 +1,146 @@
 import Link from "next/link";
+import { Suspense } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { Plus, Settings, CheckCircle2, XCircle, ExternalLink } from "lucide-react";
+import { Plus, Settings, CheckCircle2, XCircle, ExternalLink, Loader2 } from "lucide-react";
+import { getUser } from "@/lib/session";
+import { getUserOrganizations } from "@/lib/github";
+import { db } from "@/lib/db";
+import { OrganizationMessages } from "@/components/organization/organization-messages";
+import { UnregisteredOrgCard } from "@/components/organization/unregistered-org-card";
 
-// 임시 데이터 (실제로는 DB + GitHub API에서 조회)
-const organizations = [
-  {
-    id: "1",
-    login: "studiobaton",
-    name: "Studio Baton",
-    avatarUrl: null,
-    hasInstallation: true,
-    memberCount: 5,
-    repoCount: 12,
-  },
-];
+interface DbOrganization {
+  id: string;
+  login: string;
+  name: string | null;
+  avatarUrl: string | null;
+  installationId: number | null;
+  _count: {
+    repos: number;
+    members: number;
+  };
+}
 
-export default function OrganizationsPage() {
-  const githubAppInstallUrl = `https://github.com/apps/${process.env.NEXT_PUBLIC_GITHUB_APP_SLUG}/installations/new`;
+interface GitHubOrg {
+  id: number;
+  login: string;
+  avatarUrl: string;
+  description: string | null;
+}
+
+async function getOrganizationsData() {
+  const user = await getUser();
+  if (!user) return { dbOrgs: [], githubOrgs: [] };
+
+  // 1. DB에서 사용자가 속한 조직 조회
+  const dbOrgs = await db.organization.findMany({
+    where: {
+      members: {
+        some: { userId: user.id },
+      },
+    },
+    include: {
+      _count: {
+        select: { repos: true, members: true },
+      },
+    },
+    orderBy: { login: "asc" },
+  });
+
+  // 2. GitHub API로 사용자의 조직 목록 조회 (미등록 조직 표시용)
+  let githubOrgs: GitHubOrg[] = [];
+  try {
+    githubOrgs = await getUserOrganizations(user.accessToken);
+  } catch (error) {
+    console.error("Error fetching GitHub orgs:", error);
+  }
+
+  return { dbOrgs, githubOrgs };
+}
+
+function OrganizationCard({ org }: { org: DbOrganization }) {
+  const hasInstallation = !!org.installationId;
+  const githubAppInstallUrl = `https://github.com/apps/${process.env.NEXT_PUBLIC_GITHUB_APP_SLUG || "code-review-app"}/installations/new`;
 
   return (
-    <div className="container py-8 px-4">
-      <div className="mb-8 flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold">조직 관리</h1>
-          <p className="mt-2 text-muted-foreground">
-            GitHub App을 설치하여 조직의 저장소에 접근할 수 있습니다.
-          </p>
+    <Card className="hover:border-primary/50 transition-colors">
+      <CardHeader className="flex flex-row items-center gap-4">
+        <Avatar className="h-12 w-12">
+          <AvatarImage src={org.avatarUrl || undefined} />
+          <AvatarFallback>{org.login.charAt(0).toUpperCase()}</AvatarFallback>
+        </Avatar>
+        <div className="flex-1">
+          <CardTitle className="text-lg">{org.name || org.login}</CardTitle>
+          <CardDescription>@{org.login}</CardDescription>
         </div>
-        <Button asChild>
-          <a href={githubAppInstallUrl} target="_blank" rel="noopener noreferrer">
-            <Plus className="mr-2 h-4 w-4" />
-            조직 추가
-            <ExternalLink className="ml-2 h-4 w-4" />
-          </a>
-        </Button>
-      </div>
+        {hasInstallation ? (
+          <Badge variant="outline" className="text-green-600">
+            <CheckCircle2 className="mr-1 h-3 w-3" />
+            연결됨
+          </Badge>
+        ) : (
+          <Badge variant="outline" className="text-destructive">
+            <XCircle className="mr-1 h-3 w-3" />
+            미연결
+          </Badge>
+        )}
+      </CardHeader>
+      <CardContent>
+        <div className="flex items-center justify-between text-sm text-muted-foreground">
+          <span>{org._count.members}명 멤버</span>
+          <span>{org._count.repos}개 저장소</span>
+        </div>
+        <div className="mt-4 flex gap-2">
+          {hasInstallation ? (
+            <>
+              <Button variant="outline" size="sm" className="flex-1" asChild>
+                <Link href={`/organizations/${org.login}`}>
+                  <Settings className="mr-2 h-4 w-4" />
+                  설정
+                </Link>
+              </Button>
+              <Button size="sm" className="flex-1" asChild>
+                <Link href={`/analysis/new?org=${org.login}`}>
+                  분석 시작
+                </Link>
+              </Button>
+            </>
+          ) : (
+            <Button size="sm" className="w-full" asChild>
+              <a href={githubAppInstallUrl} target="_blank" rel="noopener noreferrer">
+                GitHub App 설치
+                <ExternalLink className="ml-2 h-4 w-4" />
+              </a>
+            </Button>
+          )}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
 
-      {organizations.length > 0 ? (
-        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-          {organizations.map((org) => (
-            <Card key={org.id} className="hover:border-primary/50 transition-colors">
-              <CardHeader className="flex flex-row items-center gap-4">
-                <Avatar className="h-12 w-12">
-                  <AvatarImage src={org.avatarUrl || undefined} />
-                  <AvatarFallback>{org.login.charAt(0).toUpperCase()}</AvatarFallback>
-                </Avatar>
-                <div className="flex-1">
-                  <CardTitle className="text-lg">{org.name || org.login}</CardTitle>
-                  <CardDescription>@{org.login}</CardDescription>
-                </div>
-                {org.hasInstallation ? (
-                  <Badge variant="outline" className="text-green-600">
-                    <CheckCircle2 className="mr-1 h-3 w-3" />
-                    연결됨
-                  </Badge>
-                ) : (
-                  <Badge variant="outline" className="text-destructive">
-                    <XCircle className="mr-1 h-3 w-3" />
-                    미연결
-                  </Badge>
-                )}
-              </CardHeader>
-              <CardContent>
-                <div className="flex items-center justify-between text-sm text-muted-foreground">
-                  <span>{org.memberCount}명 멤버</span>
-                  <span>{org.repoCount}개 저장소</span>
-                </div>
-                <div className="mt-4 flex gap-2">
-                  {org.hasInstallation ? (
-                    <>
-                      <Button variant="outline" size="sm" className="flex-1" asChild>
-                        <Link href={`/organizations/${org.login}`}>
-                          <Settings className="mr-2 h-4 w-4" />
-                          설정
-                        </Link>
-                      </Button>
-                      <Button size="sm" className="flex-1" asChild>
-                        <Link href={`/analysis/new?org=${org.login}`}>
-                          분석 시작
-                        </Link>
-                      </Button>
-                    </>
-                  ) : (
-                    <Button size="sm" className="w-full" asChild>
-                      <a href={githubAppInstallUrl} target="_blank" rel="noopener noreferrer">
-                        GitHub App 설치
-                        <ExternalLink className="ml-2 h-4 w-4" />
-                      </a>
-                    </Button>
-                  )}
-                </div>
-              </CardContent>
-            </Card>
-          ))}
-        </div>
+
+async function OrganizationsList() {
+  const { dbOrgs, githubOrgs } = await getOrganizationsData();
+  const registeredLogins = new Set(dbOrgs.map((org) => org.login));
+  const unregisteredOrgs = githubOrgs.filter((org) => !registeredLogins.has(org.login));
+  const githubAppInstallUrl = `https://github.com/apps/${process.env.NEXT_PUBLIC_GITHUB_APP_SLUG || "code-review-app"}/installations/new`;
+
+  return (
+    <>
+      {dbOrgs.length > 0 ? (
+        <>
+          <h2 className="mb-4 text-lg font-semibold">등록된 조직</h2>
+          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3 mb-8">
+            {dbOrgs.map((org) => (
+              <OrganizationCard key={org.id} org={org} />
+            ))}
+          </div>
+        </>
       ) : (
-        <Card>
+        <Card className="mb-8">
           <CardContent className="flex flex-col items-center justify-center py-12">
             <div className="mb-4 rounded-full bg-muted p-4">
               <Plus className="h-8 w-8 text-muted-foreground" />
@@ -117,6 +159,58 @@ export default function OrganizationsPage() {
           </CardContent>
         </Card>
       )}
+
+      {unregisteredOrgs.length > 0 && (
+        <>
+          <h2 className="mb-4 text-lg font-semibold text-muted-foreground">
+            GitHub에서 가져온 조직 (미등록)
+          </h2>
+          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+            {unregisteredOrgs.map((org) => (
+              <UnregisteredOrgCard key={org.id} org={org} />
+            ))}
+          </div>
+        </>
+      )}
+    </>
+  );
+}
+
+function LoadingState() {
+  return (
+    <div className="flex items-center justify-center py-12">
+      <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+    </div>
+  );
+}
+
+export default async function OrganizationsPage() {
+  const githubAppInstallUrl = `https://github.com/apps/${process.env.NEXT_PUBLIC_GITHUB_APP_SLUG || "code-review-app"}/installations/new`;
+
+  return (
+    <div className="container py-8 px-4">
+      {/* 메시지 표시 (설치 성공/실패 등) */}
+      <OrganizationMessages />
+
+      <div className="mb-8 flex items-center justify-between">
+        <div>
+          <h1 className="text-3xl font-bold">조직 관리</h1>
+          <p className="mt-2 text-muted-foreground">
+            GitHub App을 설치하여 조직의 저장소에 접근할 수 있습니다.
+          </p>
+        </div>
+        <Button asChild>
+          <a href={githubAppInstallUrl} target="_blank" rel="noopener noreferrer">
+            <Plus className="mr-2 h-4 w-4" />
+            조직 추가
+            <ExternalLink className="ml-2 h-4 w-4" />
+          </a>
+        </Button>
+      </div>
+
+      <Suspense fallback={<LoadingState />}>
+        <OrganizationsList />
+      </Suspense>
 
       {/* 안내 섹션 */}
       <Card className="mt-8">
@@ -152,4 +246,3 @@ export default function OrganizationsPage() {
     </div>
   );
 }
-
