@@ -228,3 +228,66 @@ model PullRequest {
 | API 호출       | 사용자 × 리포 × 커밋 | 최초 1회만        |
 | 10명 분석      | ~50분                | ~5분 (90% 단축)   |
 | 재분석         | 전체 재수집          | 즉시 가능         |
+
+## 서버리스 환경 설정 (QStash)
+
+### 개요
+
+서버리스 환경(Vercel 등)에서는 API 응답 후 함수가 종료되어 백그라운드 작업이 중단될 수 있습니다. 이를 방지하기 위해 **Upstash QStash**를 사용하여 안정적인 백그라운드 작업을 보장합니다.
+
+### 환경 변수 설정
+
+`.env` 파일에 다음 환경 변수를 추가하세요:
+
+```bash
+# Upstash QStash (서버리스 백그라운드 작업)
+QSTASH_TOKEN="your_qstash_token"
+QSTASH_CURRENT_SIGNING_KEY="your_current_signing_key"
+QSTASH_NEXT_SIGNING_KEY="your_next_signing_key"
+QSTASH_URL="https://qstash.upstash.io"
+
+# 프로덕션 URL (QStash 콜백용)
+NEXT_PUBLIC_APP_URL="https://your-production-domain.com"
+```
+
+### QStash 설정 방법
+
+1. **Upstash 계정 생성**: https://upstash.com
+2. **QStash 활성화**: 콘솔에서 QStash 메뉴 선택
+3. **토큰 복사**: API 키와 서명 키 복사
+4. **환경 변수 설정**: 위 환경 변수에 값 입력
+
+### 동작 방식
+
+#### 로컬 개발 환경
+- 직접 실행 방식 (기존 방식)
+- `NODE_ENV=development`일 때 활성화
+
+#### 프로덕션 환경
+- QStash를 통한 안전한 백그라운드 실행
+- 자동 재시도 (커밋 동기화: 3회, 분석: 1회)
+- 타임아웃 설정 (커밋 동기화: 10분, 분석: 30분)
+- 실패 시 자동 fallback
+
+### QStash의 장점
+
+✅ **안정성**: API 응답 후에도 작업 보장  
+✅ **재시도**: 실패 시 자동 재시도  
+✅ **타임아웃**: 긴 작업도 안전하게 처리  
+✅ **보안**: 서명 검증으로 무단 접근 차단  
+✅ **모니터링**: Upstash 콘솔에서 작업 상태 확인
+
+### 트러블슈팅
+
+#### QStash 연결 실패
+1. 환경 변수 확인 (`QSTASH_TOKEN`, `NEXT_PUBLIC_APP_URL`)
+2. Upstash 콘솔에서 QStash 활성화 확인
+3. 프로덕션 도메인이 공개 접근 가능한지 확인
+
+#### 작업이 실행되지 않음
+1. Upstash 콘솔에서 작업 로그 확인
+2. `/api/jobs/sync-commits` 엔드포인트 접근 가능 확인
+3. 서명 검증 키가 올바른지 확인
+
+#### Fallback 실행
+QStash 실패 시 자동으로 직접 실행으로 전환됩니다. 로그에서 `Falling back to direct execution` 메시지를 확인하세요.

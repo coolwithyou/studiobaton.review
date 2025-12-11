@@ -88,6 +88,13 @@ export function NewAnalysisForm({ organizations }: NewAnalysisFormProps) {
   const [isLoadingSync, setIsLoadingSync] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
 
+  // 권한 상태
+  const [permissionStatus, setPermissionStatus] = useState<{
+    hasAllRequired: boolean;
+    hasPRPermission: boolean;
+  } | null>(null);
+  const [isLoadingPermissions, setIsLoadingPermissions] = useState(false);
+
   const allSelected = members.length > 0 && selectedUsers.length === members.length;
 
   // 조직 + 연도 선택 시 동기화 상태 조회
@@ -156,6 +163,37 @@ export function NewAnalysisForm({ organizations }: NewAnalysisFormProps) {
     fetchMembers();
   }, [selectedOrg]);
 
+  // 조직 선택 시 권한 상태 조회
+  useEffect(() => {
+    if (!selectedOrg) {
+      setPermissionStatus(null);
+      return;
+    }
+
+    const checkPermissions = async () => {
+      setIsLoadingPermissions(true);
+      try {
+        const res = await fetch(`/api/github-app/permissions?orgLogin=${selectedOrg}`);
+        if (res.ok) {
+          const data = await res.json();
+          setPermissionStatus({
+            hasAllRequired: data.hasAllRequired,
+            hasPRPermission: data.hasPRPermission,
+          });
+        } else {
+          setPermissionStatus(null);
+        }
+      } catch (error) {
+        console.error("Error checking permissions:", error);
+        setPermissionStatus(null);
+      } finally {
+        setIsLoadingPermissions(false);
+      }
+    };
+
+    checkPermissions();
+  }, [selectedOrg]);
+
   const handleSelectAll = () => {
     if (allSelected) {
       setSelectedUsers([]);
@@ -191,6 +229,16 @@ export function NewAnalysisForm({ organizations }: NewAnalysisFormProps) {
 
       if (!res.ok) {
         const data = await res.json();
+        
+        // 권한 에러 처리
+        if (data.permissionError) {
+          toast.error(data.error, {
+            description: "권한 설정 페이지에서 Pull requests 권한을 추가해주세요.",
+            duration: 5000,
+          });
+          return;
+        }
+        
         throw new Error(data.error || "동기화 시작 실패");
       }
 

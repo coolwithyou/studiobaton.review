@@ -47,9 +47,6 @@ export default async function SyncProgressPage({
         syncJobId={syncJobId}
         orgLogin={syncJob.org.login}
         year={syncJob.year}
-        onComplete={() => {
-          // 완료 후 자동 리다이렉트는 하지 않음 (사용자가 직접 이동)
-        }}
       />
     </div>
   );

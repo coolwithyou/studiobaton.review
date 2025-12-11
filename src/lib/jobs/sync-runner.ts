@@ -21,6 +21,13 @@ interface SyncProgress {
   failedRepos: number;
   totalCommits: number;
   currentRepo?: string;
+  currentCommit?: {
+    sha: string;
+    message: string;
+    author: string;
+    index: number;
+    total: number;
+  };
   repoProgress?: Array<{
     repoName: string;
     status: "pending" | "syncing" | "done" | "failed";
@@ -281,8 +288,22 @@ async function syncCommitsForRepo(
     let savedCommits = 0;
     const commitIdMap = new Map<string, string>();
 
-    for (const details of allDetails) {
+    for (let i = 0; i < allDetails.length; i++) {
+      const details = allDetails[i];
       try {
+        // 진행률 업데이트 (10개마다 또는 첫/마지막 커밋)
+        if (i === 0 || i === allDetails.length - 1 || i % 10 === 0) {
+          await updateSyncProgress(syncJobId, {
+            currentCommit: {
+              sha: details.sha.substring(0, 7),
+              message: details.message.split('\n')[0].substring(0, 50),
+              author: details.authorLogin,
+              index: i + 1,
+              total: allDetails.length,
+            },
+          });
+        }
+
         // GitHubUser 생성
         await db.gitHubUser.upsert({
           where: { login: details.authorLogin },
@@ -366,6 +387,7 @@ async function syncCommitsForRepo(
       repoProgress: updatedProgress,
       completedRepos: completedCount,
       totalCommits: (currentProgress.totalCommits || 0) + savedCommits,
+      currentCommit: undefined, // 커밋 처리 완료
     });
 
     return { totalCommits, savedCommits, prs: syncedPRs };

@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { getSession } from "@/lib/session";
 import { db } from "@/lib/db";
 import { runCommitSync } from "@/lib/jobs/sync-runner";
+import { qstash } from "@/lib/qstash";
+import { getInstallationOctokit } from "@/lib/github";
 
 interface StartSyncRequest {
   orgLogin: string;
@@ -77,6 +79,24 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // 5-1. PR 권한 체크
+    const octokit = await getInstallationOctokit(org.installationId);
+    const { data: installation } = await octokit.rest.apps.getInstallation({
+      installation_id: org.installationId,
+    });
+
+    const permissions = installation.permissions || {};
+    if (!permissions.pull_requests || permissions.pull_requests === "none") {
+      return NextResponse.json(
+        {
+          error: "Pull Request 권한이 없습니다. GitHub App 설정에서 Pull requests 읽기 권한을 추가해주세요.",
+          permissionError: true,
+          missingPermission: "pull_requests",
+        },
+        { status: 403 }
+      );
+    }
+
     // 6. 동기화 작업 생성/업데이트
     let syncJob;
     if (existingSync) {
@@ -115,9 +135,44 @@ export async function POST(request: NextRequest) {
     }
 
     // 7. 백그라운드에서 동기화 실행
-    runCommitSync(syncJob.id).catch((error) => {
-      console.error(`[Sync] Background sync failed for ${syncJob.id}:`, error);
-    });
+    // 프로덕션 환경에서는 QStash 사용, 로컬에서는 직접 실행
+    const isDevelopment = process.env.NODE_ENV === "development";
+
+    if (isDevelopment) {
+      // 로컬 개발 환경: 직접 실행 (기존 방식)
+      console.log(`[Sync] Running sync locally for ${syncJob.id}`);
+      runCommitSync(syncJob.id).catch((error) => {
+        console.error(`[Sync] Background sync failed for ${syncJob.id}:`, error);
+      });
+    } else {
+      // 프로덕션 환경: QStash를 통해 실행
+      try {
+        const baseUrl = process.env.NEXT_PUBLIC_APP_URL || request.nextUrl.origin;
+        const jobUrl = `${baseUrl}/api/jobs/sync-commits`;
+
+        console.log(`[Sync] Enqueuing sync job via QStash: ${syncJob.id}`);
+
+        await qstash.publishJSON({
+          url: jobUrl,
+          body: {
+            syncJobId: syncJob.id,
+          },
+          // 최대 10분 타임아웃 (커밋이 많을 경우)
+          timeout: "10m",
+          // 실패 시 3번 재시도
+          retries: 3,
+        });
+
+        console.log(`[Sync] Sync job enqueued successfully: ${syncJob.id}`);
+      } catch (qstashError) {
+        console.error(`[Sync] Failed to enqueue job via QStash:`, qstashError);
+        // QStash 실패 시 fallback으로 직접 실행
+        console.log(`[Sync] Falling back to direct execution for ${syncJob.id}`);
+        runCommitSync(syncJob.id).catch((error) => {
+          console.error(`[Sync] Background sync failed for ${syncJob.id}:`, error);
+        });
+      }
+    }
 
     return NextResponse.json({
       success: true,

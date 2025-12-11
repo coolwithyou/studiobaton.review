@@ -5,12 +5,59 @@ import { runAnalysis } from "@/lib/jobs/runner-optimized";
 import { RestartMode, analyzeResumeState } from "@/lib/jobs/resume-handler";
 import { AnalysisOptions } from "@/types";
 import type { AnalysisRun } from "@prisma/client";
+import { qstash } from "@/lib/qstash";
 
 interface StartAnalysisRequest {
   orgLogin: string;
   year: number;
   userLogins: string[];
   options?: AnalysisOptions;
+}
+
+// 백그라운드에서 분석 실행 (QStash 또는 직접 실행)
+async function startAnalysisJob(
+  runId: string,
+  mode: RestartMode,
+  request: NextRequest
+): Promise<void> {
+  const isDevelopment = process.env.NODE_ENV === "development";
+
+  if (isDevelopment) {
+    // 로컬 개발 환경: 직접 실행
+    console.log(`[Analysis] Running analysis locally for ${runId}`);
+    runAnalysis(runId, mode).catch((error) => {
+      console.error(`[Analysis] Background job failed for ${runId}:`, error);
+    });
+  } else {
+    // 프로덕션 환경: QStash를 통해 실행
+    try {
+      const baseUrl = process.env.NEXT_PUBLIC_APP_URL || request.nextUrl.origin;
+      const jobUrl = `${baseUrl}/api/jobs/run-analysis`;
+
+      console.log(`[Analysis] Enqueuing analysis job via QStash: ${runId}`);
+
+      await qstash.publishJSON({
+        url: jobUrl,
+        body: {
+          runId,
+          mode,
+        },
+        // 최대 30분 타임아웃 (분석은 시간이 오래 걸릴 수 있음)
+        timeout: "30m",
+        // 실패 시 1번만 재시도
+        retries: 1,
+      });
+
+      console.log(`[Analysis] Analysis job enqueued successfully: ${runId}`);
+    } catch (qstashError) {
+      console.error(`[Analysis] Failed to enqueue job via QStash:`, qstashError);
+      // QStash 실패 시 fallback으로 직접 실행
+      console.log(`[Analysis] Falling back to direct execution for ${runId}`);
+      runAnalysis(runId, mode).catch((error) => {
+        console.error(`[Analysis] Background job failed for ${runId}:`, error);
+      });
+    }
+  }
 }
 
 export async function POST(request: NextRequest) {
@@ -157,9 +204,7 @@ export async function POST(request: NextRequest) {
           });
 
           // 재시작 모드로 분석 실행
-          runAnalysis(analysisRun.id, RestartMode.RESUME).catch((error) => {
-            console.error(`[Analysis] Background job failed for ${analysisRun.id}:`, error);
-          });
+          await startAnalysisJob(analysisRun.id, RestartMode.RESUME, request);
 
           createdRuns.push({
             runId: analysisRun.id,
@@ -209,9 +254,7 @@ export async function POST(request: NextRequest) {
             },
           });
 
-          runAnalysis(analysisRun.id, RestartMode.FULL_RESTART).catch((error) => {
-            console.error(`[Analysis] Background job failed for ${analysisRun.id}:`, error);
-          });
+          await startAnalysisJob(analysisRun.id, RestartMode.FULL_RESTART, request);
 
           createdRuns.push({
             runId: analysisRun.id,
@@ -244,9 +287,7 @@ export async function POST(request: NextRequest) {
             },
           });
 
-          runAnalysis(analysisRun.id, RestartMode.FULL_RESTART).catch((error) => {
-            console.error(`[Analysis] Background job failed for ${analysisRun.id}:`, error);
-          });
+          await startAnalysisJob(analysisRun.id, RestartMode.FULL_RESTART, request);
 
           createdRuns.push({
             runId: analysisRun.id,
@@ -274,8 +315,12 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // 단일 사용자 분석인 경우 첫 번째 runId를 직접 반환 (기존 호환성 유지)
+    const firstRun = createdRuns[0];
+
     return NextResponse.json({
       success: true,
+      runId: firstRun.runId, // 기존 호환성을 위해 첫 번째 runId 반환
       runs: createdRuns,
       message: `${createdRuns.length}개의 분석이 시작되었습니다.`,
       errors: errors.length > 0 ? errors : undefined,

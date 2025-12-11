@@ -29,6 +29,13 @@ interface SyncProgress {
   failedRepos: number;
   totalCommits: number;
   currentRepo?: string;
+  currentCommit?: {
+    sha: string;
+    message: string;
+    author: string;
+    index: number;
+    total: number;
+  };
   repoProgress?: Array<{
     repoName: string;
     status: "pending" | "syncing" | "done" | "failed";
@@ -211,6 +218,37 @@ export function SyncProgress({
             <p className="text-sm text-muted-foreground mt-1">
               {syncData.progress.currentRepo}
             </p>
+          </div>
+        )}
+
+        {/* 현재 처리 중인 커밋 */}
+        {isRunning && syncData.progress?.currentCommit && (
+          <div className="rounded-lg border border-blue-200 bg-blue-50 dark:border-blue-900 dark:bg-blue-950 p-3 space-y-2">
+            <div className="flex items-center justify-between">
+              <p className="text-sm font-medium text-blue-900 dark:text-blue-100">
+                커밋 처리 중
+              </p>
+              <span className="text-xs text-blue-700 dark:text-blue-300">
+                {syncData.progress.currentCommit.index} / {syncData.progress.currentCommit.total}
+              </span>
+            </div>
+            <div className="space-y-1">
+              <div className="flex items-center gap-2 text-xs">
+                <code className="px-1.5 py-0.5 rounded bg-blue-100 dark:bg-blue-900 text-blue-800 dark:text-blue-200 font-mono">
+                  {syncData.progress.currentCommit.sha}
+                </code>
+                <span className="text-blue-700 dark:text-blue-300">
+                  by {syncData.progress.currentCommit.author}
+                </span>
+              </div>
+              <p className="text-sm text-blue-800 dark:text-blue-200 truncate">
+                {syncData.progress.currentCommit.message}
+              </p>
+            </div>
+            <Progress
+              value={(syncData.progress.currentCommit.index / syncData.progress.currentCommit.total) * 100}
+              className="h-1 bg-blue-200 dark:bg-blue-900"
+            />
           </div>
         )}
 
