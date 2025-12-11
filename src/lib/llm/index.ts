@@ -17,9 +17,9 @@ export function createLLMProvider(model: LLMModelType): LLMProvider {
     case "gpt-4o":
       return new OpenAIProvider("gpt-4o");
     case "claude-sonnet-4-5":
-      return new AnthropicProvider("claude-sonnet-4-5-20241022");
+      return new AnthropicProvider("claude-sonnet-4-5-20250929");
     default:
-      return new AnthropicProvider("claude-sonnet-4-5-20241022");
+      return new AnthropicProvider("claude-sonnet-4-5-20250929");
   }
 }
 
