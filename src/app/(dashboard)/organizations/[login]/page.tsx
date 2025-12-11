@@ -168,6 +168,10 @@ export default async function OrganizationDetailPage({
             <Users className="mr-2 h-4 w-4" />
             멤버
           </TabsTrigger>
+          <TabsTrigger value="permissions">
+            <Settings className="mr-2 h-4 w-4" />
+            권한
+          </TabsTrigger>
           {isAdmin && (
             <TabsTrigger value="settings">
               <Settings className="mr-2 h-4 w-4" />
@@ -233,6 +237,26 @@ export default async function OrganizationDetailPage({
         {/* 멤버 탭 */}
         <TabsContent value="members">
           <OrganizationMembersList orgLogin={org.login} />
+        </TabsContent>
+
+        {/* 권한 탭 */}
+        <TabsContent value="permissions">
+          <Card>
+            <CardHeader>
+              <CardTitle>GitHub App 권한</CardTitle>
+              <CardDescription>
+                시스템이 필요로 하는 GitHub App 권한을 확인하고 관리합니다.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <Button asChild>
+                <Link href={`/organizations/${org.login}/permissions`}>
+                  <Settings className="mr-2 h-4 w-4" />
+                  권한 확인 페이지 열기
+                </Link>
+              </Button>
+            </CardContent>
+          </Card>
         </TabsContent>
 
         {/* 설정 탭 (관리자만) */}

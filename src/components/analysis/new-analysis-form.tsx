@@ -6,6 +6,7 @@ import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
+import { Badge } from "@/components/ui/badge";
 import {
   Select,
   SelectContent,
@@ -31,6 +32,10 @@ import {
   Loader2,
   AlertCircle,
   Plus,
+  GitBranch,
+  RefreshCcw,
+  CheckCircle2,
+  XCircle,
 } from "lucide-react";
 
 interface Organization {
@@ -77,7 +82,46 @@ export function NewAnalysisForm({ organizations }: NewAnalysisFormProps) {
   const [members, setMembers] = useState<Member[]>([]);
   const [membersError, setMembersError] = useState<string | null>(null);
 
+  // 동기화 상태
+  const [syncStatus, setSyncStatus] = useState<"PENDING" | "IN_PROGRESS" | "COMPLETED" | "FAILED" | null>(null);
+  const [syncJobId, setSyncJobId] = useState<string | null>(null);
+  const [isLoadingSync, setIsLoadingSync] = useState(false);
+  const [isSyncing, setIsSyncing] = useState(false);
+
   const allSelected = members.length > 0 && selectedUsers.length === members.length;
+
+  // 조직 + 연도 선택 시 동기화 상태 조회
+  useEffect(() => {
+    if (!selectedOrg || !selectedYear) {
+      setSyncStatus(null);
+      setSyncJobId(null);
+      return;
+    }
+
+    const checkSyncStatus = async () => {
+      setIsLoadingSync(true);
+      try {
+        const res = await fetch(`/api/commits/sync/${selectedOrg}/${selectedYear}`);
+        if (res.ok) {
+          const data = await res.json();
+          setSyncStatus(data.status);
+          setSyncJobId(data.id);
+        } else if (res.status === 404) {
+          // 동기화 작업이 없음
+          setSyncStatus(null);
+          setSyncJobId(null);
+        }
+      } catch (error) {
+        console.error("Error checking sync status:", error);
+        setSyncStatus(null);
+        setSyncJobId(null);
+      } finally {
+        setIsLoadingSync(false);
+      }
+    };
+
+    checkSyncStatus();
+  }, [selectedOrg, selectedYear]);
 
   // 조직 선택 시 멤버 목록 조회
   useEffect(() => {
@@ -128,6 +172,40 @@ export function NewAnalysisForm({ organizations }: NewAnalysisFormProps) {
     );
   };
 
+  const handleStartSync = async () => {
+    if (!selectedOrg || !selectedYear) {
+      toast.error("조직과 연도를 선택해주세요.");
+      return;
+    }
+
+    setIsSyncing(true);
+    try {
+      const res = await fetch("/api/commits/sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          orgLogin: selectedOrg,
+          year: parseInt(selectedYear),
+        }),
+      });
+
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error || "동기화 시작 실패");
+      }
+
+      const data = await res.json();
+      setSyncJobId(data.syncJobId);
+      setSyncStatus("IN_PROGRESS");
+      toast.success("커밋 동기화가 시작되었습니다.");
+    } catch (error) {
+      console.error("Error starting sync:", error);
+      toast.error(error instanceof Error ? error.message : "동기화 시작 실패");
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
   const handleSubmit = async () => {
     if (!selectedOrg) {
       toast.error("조직을 선택해주세요.");
@@ -158,7 +236,15 @@ export function NewAnalysisForm({ organizations }: NewAnalysisFormProps) {
 
       if (!response.ok) {
         const data = await response.json();
-        
+
+        // 동기화 필요 에러
+        if (data.syncRequired) {
+          toast.error("해당 연도의 커밋 동기화가 필요합니다.", {
+            description: "먼저 커밋 동기화를 완료해주세요.",
+          });
+          return;
+        }
+
         // 409 에러: 기존 분석이 진행 중
         if (response.status === 409 && data.runId) {
           const statusMessages: Record<string, string> = {
@@ -172,16 +258,16 @@ export function NewAnalysisForm({ organizations }: NewAnalysisFormProps) {
           };
 
           const statusText = statusMessages[data.currentStatus] || "진행 중";
-          
+
           toast.info(
             `${selectedYear}년 분석이 이미 ${statusText}입니다. 해당 페이지로 이동합니다.`,
             { duration: 3000 }
           );
-          
+
           router.push(`/analysis/${data.runId}`);
           return;
         }
-        
+
         throw new Error(data.error || "분석 시작에 실패했습니다.");
       }
 
@@ -273,6 +359,77 @@ export function NewAnalysisForm({ organizations }: NewAnalysisFormProps) {
           </Select>
         </div>
 
+        {/* 커밋 동기화 상태 */}
+        {selectedOrg && selectedYear && (
+          <div className="space-y-3 rounded-lg border p-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <GitBranch className="h-4 w-4" />
+                <span className="font-medium">커밋 동기화</span>
+              </div>
+              {isLoadingSync ? (
+                <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+              ) : syncStatus === "COMPLETED" ? (
+                <Badge variant="default" className="bg-green-600">
+                  <CheckCircle2 className="mr-1 h-3 w-3" />
+                  완료
+                </Badge>
+              ) : syncStatus === "IN_PROGRESS" ? (
+                <Badge variant="secondary">
+                  <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                  진행 중
+                </Badge>
+              ) : syncStatus === "FAILED" ? (
+                <Badge variant="destructive">
+                  <XCircle className="mr-1 h-3 w-3" />
+                  실패
+                </Badge>
+              ) : (
+                <Badge variant="outline">미완료</Badge>
+              )}
+            </div>
+
+            <p className="text-sm text-muted-foreground">
+              {syncStatus === "COMPLETED"
+                ? `${selectedYear}년 커밋이 동기화되었습니다. 분석을 시작할 수 있습니다.`
+                : syncStatus === "IN_PROGRESS"
+                  ? "커밋 동기화가 진행 중입니다. 완료될 때까지 기다려주세요."
+                  : syncStatus === "FAILED"
+                    ? "동기화에 실패했습니다. 다시 시도해주세요."
+                    : `${selectedYear}년 커밋을 먼저 동기화해야 분석을 시작할 수 있습니다.`}
+            </p>
+
+            {syncStatus !== "COMPLETED" && syncStatus !== "IN_PROGRESS" && (
+              <Button
+                onClick={handleStartSync}
+                disabled={isSyncing}
+                variant="outline"
+                className="w-full"
+              >
+                {isSyncing ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    동기화 시작 중...
+                  </>
+                ) : (
+                  <>
+                    <RefreshCcw className="mr-2 h-4 w-4" />
+                    커밋 동기화 시작
+                  </>
+                )}
+              </Button>
+            )}
+
+            {syncStatus === "IN_PROGRESS" && syncJobId && (
+              <Link href={`/sync/${syncJobId}`}>
+                <Button variant="ghost" size="sm" className="w-full">
+                  진행 상황 보기 →
+                </Button>
+              </Link>
+            )}
+          </div>
+        )}
+
         <Separator />
 
         {/* 사용자 선택 */}
@@ -360,9 +517,8 @@ export function NewAnalysisForm({ organizations }: NewAnalysisFormProps) {
             <Button variant="ghost" className="w-full justify-between">
               고급 옵션
               <ChevronDown
-                className={`h-4 w-4 transition-transform ${
-                  isAdvancedOpen ? "rotate-180" : ""
-                }`}
+                className={`h-4 w-4 transition-transform ${isAdvancedOpen ? "rotate-180" : ""
+                  }`}
               />
             </Button>
           </CollapsibleTrigger>
@@ -407,7 +563,7 @@ export function NewAnalysisForm({ organizations }: NewAnalysisFormProps) {
           className="w-full"
           size="lg"
           onClick={handleSubmit}
-          disabled={isLoading || !selectedOrg || selectedUsers.length === 0}
+          disabled={isLoading || !selectedOrg || selectedUsers.length === 0 || syncStatus !== "COMPLETED"}
         >
           {isLoading ? (
             <>

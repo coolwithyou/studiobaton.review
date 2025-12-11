@@ -52,7 +52,31 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // 5. GitHubUser 레코드 확인/생성
+    // 5. 커밋 동기화 상태 확인
+    const syncJob = await db.commitSyncJob.findUnique({
+      where: {
+        orgId_year: {
+          orgId: org.id,
+          year,
+        },
+      },
+    });
+
+    // 동기화가 완료되지 않았으면 차단
+    if (!syncJob || syncJob.status !== "COMPLETED") {
+      return NextResponse.json(
+        {
+          error: "해당 연도의 커밋 동기화가 필요합니다.",
+          syncRequired: true,
+          syncStatus: syncJob?.status || null,
+          orgLogin,
+          year,
+        },
+        { status: 400 }
+      );
+    }
+
+    // 6. GitHubUser 레코드 확인/생성
     for (const login of userLogins) {
       await db.gitHubUser.upsert({
         where: { login },
@@ -61,7 +85,7 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    // 6. 각 사용자별로 독립적인 AnalysisRun 생성
+    // 7. 각 사용자별로 독립적인 AnalysisRun 생성
     const createdRuns: { runId: string; userLogin: string; status: string }[] = [];
     const errors: { userLogin: string; error: string }[] = [];
 
@@ -96,7 +120,7 @@ export async function POST(request: NextRequest) {
         if (existingRun && ["FAILED", "AWAITING_AI_CONFIRMATION"].includes(existingRun.status)) {
           // 실패하거나 AI 대기 중인 분석 재시작
           const resumeState = await analyzeResumeState(existingRun.id);
-          
+
           console.log(
             `[Start] Restarting ${existingRun.status} analysis for ${userLogin} - ${resumeState.stats.totalCommits} commits`
           );
@@ -239,11 +263,11 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // 7. 응답 반환
+    // 8. 응답 반환
     if (createdRuns.length === 0) {
       return NextResponse.json(
-        { 
-          error: "모든 분석 생성에 실패했습니다.", 
+        {
+          error: "모든 분석 생성에 실패했습니다.",
           details: errors,
         },
         { status: 400 }

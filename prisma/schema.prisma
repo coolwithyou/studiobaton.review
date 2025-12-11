@@ -15,19 +15,20 @@ datasource db {
 // ============================================
 
 model Organization {
-  id              String   @id @default(cuid())
-  githubId        Int      @unique
-  login           String   @unique
-  name            String?
-  avatarUrl       String?
-  installationId  Int?
-  settings        Json?    // 핵심모듈 경로, 가중치 등
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  id             String   @id @default(cuid())
+  githubId       Int      @unique
+  login          String   @unique
+  name           String?
+  avatarUrl      String?
+  installationId Int?
+  settings       Json? // 핵심모듈 경로, 가중치 등
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 
   repos        Repository[]
   analysisRuns AnalysisRun[]
   members      OrganizationMember[]
+  syncJobs     CommitSyncJob[]
 }
 
 model OrganizationMember {
@@ -54,18 +55,19 @@ enum OrgRole {
 // ============================================
 
 model User {
-  id           String   @id @default(cuid())
-  githubId     Int      @unique
-  login        String   @unique
-  name         String?
-  email        String?
-  avatarUrl    String?
-  accessToken  String?  // GitHub API 호출용 (암호화 필요)
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  id          String   @id @default(cuid())
+  githubId    Int      @unique
+  login       String   @unique
+  name        String?
+  email       String?
+  avatarUrl   String?
+  accessToken String? // GitHub API 호출용 (암호화 필요)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
   organizations OrganizationMember[]
   analysisRuns  AnalysisRun[]        @relation("CreatedBy")
+  syncJobs      CommitSyncJob[]      @relation("SyncCreatedBy")
 }
 
 // ============================================
@@ -86,9 +88,10 @@ model Repository {
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
-  org       Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  commits   Commit[]
-  workUnits WorkUnit[]
+  org          Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  commits      Commit[]
+  workUnits    WorkUnit[]
+  pullRequests PullRequest[]
 
   @@index([orgId])
 }
@@ -111,6 +114,7 @@ model GitHubUser {
   workUnits    WorkUnit[]
   reports      YearlyReport[]
   analysisRuns AnalysisRun[]
+  pullRequests PullRequest[]
 }
 
 // ============================================
@@ -120,11 +124,11 @@ model GitHubUser {
 model AnalysisRun {
   id          String    @id @default(cuid())
   orgId       String
-  userLogin   String    // 단일 대상 사용자
+  userLogin   String // 단일 대상 사용자
   year        Int
   status      RunStatus @default(QUEUED)
-  progress    Json?     // { total: N, completed: M, failed: K }
-  options     Json      // 분석 옵션 스냅샷
+  progress    Json? // { total: N, completed: M, failed: K }
+  options     Json // 분석 옵션 스냅샷
   error       String?
   startedAt   DateTime?
   finishedAt  DateTime?
@@ -171,10 +175,11 @@ model Commit {
   deletions    Int      @default(0)
   filesChanged Int      @default(0)
 
-  repo          Repository       @relation(fields: [repoId], references: [id], onDelete: Cascade)
-  author        GitHubUser       @relation(fields: [authorLogin], references: [login])
+  repo          Repository          @relation(fields: [repoId], references: [id], onDelete: Cascade)
+  author        GitHubUser          @relation(fields: [authorLogin], references: [login])
   files         CommitFile[]
   workUnitLinks WorkUnitCommit[]
+  prLinks       PullRequestCommit[]
 
   @@unique([repoId, sha])
   @@index([authorLogin, committedAt])
@@ -265,7 +270,7 @@ model AiReview {
   outputTokens  Int?
 
   // 결과 (구조화)
-  result      Json    // ReviewResult 타입
+  result      Json // ReviewResult 타입
   rawResponse String? @db.Text // 원본 응답 (디버깅용)
 
   createdAt DateTime @default(now())
@@ -336,4 +341,76 @@ enum JobStatus {
   COMPLETED
   FAILED
   RETRYING
+}
+
+// ============================================
+// 커밋 동기화
+// ============================================
+
+model CommitSyncJob {
+  id          String     @id @default(cuid())
+  orgId       String
+  year        Int
+  status      SyncStatus @default(PENDING)
+  progress    Json? // { totalRepos, completedRepos, failedRepos, totalCommits }
+  error       String?    @db.Text
+  startedAt   DateTime?
+  finishedAt  DateTime?
+  createdAt   DateTime   @default(now())
+  createdById String?
+
+  org       Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  createdBy User?        @relation("SyncCreatedBy", fields: [createdById], references: [id])
+
+  @@unique([orgId, year])
+  @@index([status])
+  @@index([orgId])
+}
+
+enum SyncStatus {
+  PENDING
+  IN_PROGRESS
+  COMPLETED
+  FAILED
+}
+
+// ============================================
+// Pull Request
+// ============================================
+
+model PullRequest {
+  id          String    @id @default(cuid())
+  repoId      String
+  githubId    Int
+  number      Int
+  title       String
+  body        String?   @db.Text
+  state       String // open, closed, merged
+  authorLogin String
+  baseBranch  String
+  headBranch  String
+  mergedAt    DateTime?
+  closedAt    DateTime?
+  createdAt   DateTime
+  updatedAt   DateTime
+
+  repo    Repository          @relation(fields: [repoId], references: [id], onDelete: Cascade)
+  author  GitHubUser          @relation(fields: [authorLogin], references: [login])
+  commits PullRequestCommit[]
+
+  @@unique([repoId, number])
+  @@index([authorLogin])
+  @@index([repoId, state])
+  @@index([repoId, createdAt])
+}
+
+model PullRequestCommit {
+  prId     String
+  commitId String
+
+  pr     PullRequest @relation(fields: [prId], references: [id], onDelete: Cascade)
+  commit Commit      @relation(fields: [commitId], references: [id], onDelete: Cascade)
+
+  @@id([prId, commitId])
+  @@index([commitId])
 }
