@@ -33,8 +33,6 @@ interface HeaderProps {
 
 const navigation = [
   { name: "대시보드", href: "/dashboard", icon: LayoutDashboard },
-  { name: "분석", href: "/analysis", icon: BarChart3 },
-  { name: "조직", href: "/organizations", icon: Building2 },
 ];
 
 export function Header({ user }: HeaderProps) {

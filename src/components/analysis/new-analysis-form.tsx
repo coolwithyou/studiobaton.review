@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -28,23 +28,12 @@ import {
   ChevronDown,
   Users,
   Calendar,
-  Building2,
   Loader2,
-  AlertCircle,
-  Plus,
   GitBranch,
   RefreshCcw,
   CheckCircle2,
   XCircle,
 } from "lucide-react";
-
-interface Organization {
-  id: string;
-  login: string;
-  name: string | null;
-  avatarUrl: string | null;
-  installationId: number | null;
-}
 
 interface Member {
   login: string;
@@ -56,23 +45,20 @@ interface Member {
 }
 
 interface NewAnalysisFormProps {
-  organizations: Organization[];
+  orgLogin: string;
 }
 
 const currentYear = new Date().getFullYear();
 const years = Array.from({ length: 5 }, (_, i) => currentYear - i);
 
-export function NewAnalysisForm({ organizations }: NewAnalysisFormProps) {
+export function NewAnalysisForm({ orgLogin }: NewAnalysisFormProps) {
   const router = useRouter();
-  const searchParams = useSearchParams();
-  const initialOrg = searchParams.get("org") || "";
 
   const [isLoading, setIsLoading] = useState(false);
   const [isLoadingMembers, setIsLoadingMembers] = useState(false);
   const [isAdvancedOpen, setIsAdvancedOpen] = useState(false);
 
   // 폼 상태
-  const [selectedOrg, setSelectedOrg] = useState(initialOrg);
   const [selectedYear, setSelectedYear] = useState(currentYear.toString());
   const [selectedUsers, setSelectedUsers] = useState<string[]>([]);
   const [llmModel, setLlmModel] = useState<"gpt-4o" | "claude-3-5-sonnet">("gpt-4o");
@@ -88,18 +74,11 @@ export function NewAnalysisForm({ organizations }: NewAnalysisFormProps) {
   const [isLoadingSync, setIsLoadingSync] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
 
-  // 권한 상태
-  const [permissionStatus, setPermissionStatus] = useState<{
-    hasAllRequired: boolean;
-    hasPRPermission: boolean;
-  } | null>(null);
-  const [isLoadingPermissions, setIsLoadingPermissions] = useState(false);
-
   const allSelected = members.length > 0 && selectedUsers.length === members.length;
 
-  // 조직 + 연도 선택 시 동기화 상태 조회
+  // 연도 선택 시 동기화 상태 조회
   useEffect(() => {
-    if (!selectedOrg || !selectedYear) {
+    if (!selectedYear) {
       setSyncStatus(null);
       setSyncJobId(null);
       return;
@@ -108,13 +87,12 @@ export function NewAnalysisForm({ organizations }: NewAnalysisFormProps) {
     const checkSyncStatus = async () => {
       setIsLoadingSync(true);
       try {
-        const res = await fetch(`/api/commits/sync/${selectedOrg}/${selectedYear}`);
+        const res = await fetch(`/api/commits/sync/${orgLogin}/${selectedYear}`);
         if (res.ok) {
           const data = await res.json();
           setSyncStatus(data.status);
           setSyncJobId(data.id);
         } else if (res.status === 404) {
-          // 동기화 작업이 없음
           setSyncStatus(null);
           setSyncJobId(null);
         }
@@ -128,24 +106,16 @@ export function NewAnalysisForm({ organizations }: NewAnalysisFormProps) {
     };
 
     checkSyncStatus();
-  }, [selectedOrg, selectedYear]);
+  }, [orgLogin, selectedYear]);
 
-  // 조직 선택 시 멤버 목록 조회
+  // 조직 멤버 목록 조회
   useEffect(() => {
-    if (!selectedOrg) {
-      setMembers([]);
-      setSelectedUsers([]);
-      return;
-    }
-
     const fetchMembers = async () => {
       setIsLoadingMembers(true);
       setMembersError(null);
-      setMembers([]);
-      setSelectedUsers([]);
 
       try {
-        const res = await fetch(`/api/organizations/${selectedOrg}/members`);
+        const res = await fetch(`/api/organizations/${orgLogin}/members`);
         if (!res.ok) {
           const data = await res.json();
           throw new Error(data.error || "멤버 조회 실패");
@@ -161,38 +131,7 @@ export function NewAnalysisForm({ organizations }: NewAnalysisFormProps) {
     };
 
     fetchMembers();
-  }, [selectedOrg]);
-
-  // 조직 선택 시 권한 상태 조회
-  useEffect(() => {
-    if (!selectedOrg) {
-      setPermissionStatus(null);
-      return;
-    }
-
-    const checkPermissions = async () => {
-      setIsLoadingPermissions(true);
-      try {
-        const res = await fetch(`/api/github-app/permissions?orgLogin=${selectedOrg}`);
-        if (res.ok) {
-          const data = await res.json();
-          setPermissionStatus({
-            hasAllRequired: data.hasAllRequired,
-            hasPRPermission: data.hasPRPermission,
-          });
-        } else {
-          setPermissionStatus(null);
-        }
-      } catch (error) {
-        console.error("Error checking permissions:", error);
-        setPermissionStatus(null);
-      } finally {
-        setIsLoadingPermissions(false);
-      }
-    };
-
-    checkPermissions();
-  }, [selectedOrg]);
+  }, [orgLogin]);
 
   const handleSelectAll = () => {
     if (allSelected) {
@@ -211,8 +150,8 @@ export function NewAnalysisForm({ organizations }: NewAnalysisFormProps) {
   };
 
   const handleStartSync = async () => {
-    if (!selectedOrg || !selectedYear) {
-      toast.error("조직과 연도를 선택해주세요.");
+    if (!selectedYear) {
+      toast.error("연도를 선택해주세요.");
       return;
     }
 
@@ -222,23 +161,13 @@ export function NewAnalysisForm({ organizations }: NewAnalysisFormProps) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          orgLogin: selectedOrg,
+          orgLogin,
           year: parseInt(selectedYear),
         }),
       });
 
       if (!res.ok) {
         const data = await res.json();
-        
-        // 권한 에러 처리
-        if (data.permissionError) {
-          toast.error(data.error, {
-            description: "권한 설정 페이지에서 Pull requests 권한을 추가해주세요.",
-            duration: 5000,
-          });
-          return;
-        }
-        
         throw new Error(data.error || "동기화 시작 실패");
       }
 
@@ -255,11 +184,6 @@ export function NewAnalysisForm({ organizations }: NewAnalysisFormProps) {
   };
 
   const handleSubmit = async () => {
-    if (!selectedOrg) {
-      toast.error("조직을 선택해주세요.");
-      return;
-    }
-
     if (selectedUsers.length === 0) {
       toast.error("분석할 사용자를 선택해주세요.");
       return;
@@ -272,7 +196,7 @@ export function NewAnalysisForm({ organizations }: NewAnalysisFormProps) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          orgLogin: selectedOrg,
+          orgLogin,
           year: parseInt(selectedYear),
           userLogins: selectedUsers,
           options: {
@@ -285,7 +209,6 @@ export function NewAnalysisForm({ organizations }: NewAnalysisFormProps) {
       if (!response.ok) {
         const data = await response.json();
 
-        // 동기화 필요 에러
         if (data.syncRequired) {
           toast.error("해당 연도의 커밋 동기화가 필요합니다.", {
             description: "먼저 커밋 동기화를 완료해주세요.",
@@ -293,7 +216,6 @@ export function NewAnalysisForm({ organizations }: NewAnalysisFormProps) {
           return;
         }
 
-        // 409 에러: 기존 분석이 진행 중
         if (response.status === 409 && data.runId) {
           const statusMessages: Record<string, string> = {
             QUEUED: "대기 중",
@@ -312,7 +234,7 @@ export function NewAnalysisForm({ organizations }: NewAnalysisFormProps) {
             { duration: 3000 }
           );
 
-          router.push(`/analysis/${data.runId}`);
+          router.push(`/organizations/${orgLogin}/analysis/${data.runId}`);
           return;
         }
 
@@ -321,7 +243,7 @@ export function NewAnalysisForm({ organizations }: NewAnalysisFormProps) {
 
       const data = await response.json();
       toast.success("분석이 시작되었습니다!");
-      router.push(`/analysis/${data.runId}`);
+      router.push(`/organizations/${orgLogin}/analysis/${data.runId}`);
     } catch (error) {
       console.error("Analysis start error:", error);
       toast.error(error instanceof Error ? error.message : "분석 시작에 실패했습니다.");
@@ -330,63 +252,15 @@ export function NewAnalysisForm({ organizations }: NewAnalysisFormProps) {
     }
   };
 
-  if (organizations.length === 0) {
-    return (
-      <Card>
-        <CardContent className="flex flex-col items-center justify-center py-12">
-          <AlertCircle className="mb-4 h-12 w-12 text-muted-foreground" />
-          <h3 className="mb-2 text-lg font-semibold">등록된 조직이 없습니다</h3>
-          <p className="mb-4 text-center text-muted-foreground">
-            분석을 시작하려면 먼저 GitHub App을 조직에 설치해주세요.
-          </p>
-          <Button asChild>
-            <Link href="/organizations">
-              <Plus className="mr-2 h-4 w-4" />
-              조직 등록하기
-            </Link>
-          </Button>
-        </CardContent>
-      </Card>
-    );
-  }
-
   return (
     <Card>
       <CardHeader>
         <CardTitle>분석 설정</CardTitle>
         <CardDescription>
-          분석할 조직, 연도, 대상 사용자를 선택합니다.
+          연도와 대상 사용자를 선택합니다.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-6">
-        {/* 조직 선택 */}
-        <div className="space-y-2">
-          <Label className="flex items-center gap-2">
-            <Building2 className="h-4 w-4" />
-            조직
-          </Label>
-          <Select value={selectedOrg} onValueChange={setSelectedOrg}>
-            <SelectTrigger>
-              <SelectValue placeholder="조직 선택" />
-            </SelectTrigger>
-            <SelectContent>
-              {organizations.map((org) => (
-                <SelectItem key={org.id} value={org.login}>
-                  <div className="flex items-center gap-2">
-                    <Avatar className="h-5 w-5">
-                      <AvatarImage src={org.avatarUrl || undefined} />
-                      <AvatarFallback className="text-xs">
-                        {org.login.charAt(0).toUpperCase()}
-                      </AvatarFallback>
-                    </Avatar>
-                    {org.name || org.login} (@{org.login})
-                  </div>
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-
         {/* 연도 선택 */}
         <div className="space-y-2">
           <Label className="flex items-center gap-2">
@@ -408,7 +282,7 @@ export function NewAnalysisForm({ organizations }: NewAnalysisFormProps) {
         </div>
 
         {/* 커밋 동기화 상태 */}
-        {selectedOrg && selectedYear && (
+        {selectedYear && (
           <div className="space-y-3 rounded-lg border p-4">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
@@ -469,7 +343,7 @@ export function NewAnalysisForm({ organizations }: NewAnalysisFormProps) {
             )}
 
             {syncStatus === "IN_PROGRESS" && syncJobId && (
-              <Link href={`/sync/${syncJobId}`}>
+              <Link href={`/organizations/${orgLogin}/sync/${syncJobId}`}>
                 <Button variant="ghost" size="sm" className="w-full">
                   진행 상황 보기 →
                 </Button>
@@ -498,12 +372,6 @@ export function NewAnalysisForm({ organizations }: NewAnalysisFormProps) {
               </Button>
             )}
           </div>
-
-          {!selectedOrg && (
-            <p className="text-sm text-muted-foreground">
-              조직을 선택하면 멤버 목록이 표시됩니다.
-            </p>
-          )}
 
           {isLoadingMembers && (
             <div className="flex items-center justify-center py-8">
@@ -611,7 +479,7 @@ export function NewAnalysisForm({ organizations }: NewAnalysisFormProps) {
           className="w-full"
           size="lg"
           onClick={handleSubmit}
-          disabled={isLoading || !selectedOrg || selectedUsers.length === 0 || syncStatus !== "COMPLETED"}
+          disabled={isLoading || selectedUsers.length === 0 || syncStatus !== "COMPLETED"}
         >
           {isLoading ? (
             <>
@@ -629,4 +497,3 @@ export function NewAnalysisForm({ organizations }: NewAnalysisFormProps) {
     </Card>
   );
 }
-

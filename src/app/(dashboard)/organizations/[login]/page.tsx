@@ -1,58 +1,42 @@
-import { notFound, redirect } from "next/navigation";
 import Link from "next/link";
-import { Button } from "@/components/ui/button";
+import { notFound, redirect } from "next/navigation";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { getUser } from "@/lib/session";
 import { db } from "@/lib/db";
 import {
-  ArrowLeft,
-  Building2,
-  GitBranch,
-  Users,
-  Settings,
+  Plus,
   BarChart3,
+  FileText,
+  Clock,
   CheckCircle2,
   XCircle,
-  Lock,
-  Globe,
-  Archive,
+  Loader2,
+  ArrowRight,
+  Settings,
 } from "lucide-react";
-import { OrganizationSettingsForm } from "@/components/organization/organization-settings-form";
-import { OrganizationMembersList } from "@/components/organization/organization-members-list";
+import { RunStatus } from "@prisma/client";
 
-interface OrgSettings {
-  criticalPaths?: Array<{ pattern: string; weight: number }>;
-  excludedRepos?: string[];
-  defaultLlmModel?: string;
-  teamStandards?: string;
-}
+const statusConfig: Record<RunStatus, { label: string; icon: React.ElementType; color: string }> = {
+  QUEUED: { label: "대기 중", icon: Clock, color: "text-yellow-600" },
+  SCANNING_REPOS: { label: "저장소 스캔", icon: Loader2, color: "text-blue-600" },
+  SCANNING_COMMITS: { label: "커밋 수집", icon: Loader2, color: "text-blue-600" },
+  BUILDING_UNITS: { label: "분석 중", icon: Loader2, color: "text-blue-600" },
+  AWAITING_AI_CONFIRMATION: { label: "AI 확인 대기", icon: Clock, color: "text-yellow-600" },
+  REVIEWING: { label: "AI 리뷰", icon: Loader2, color: "text-purple-600" },
+  FINALIZING: { label: "완료 중", icon: Loader2, color: "text-green-600" },
+  DONE: { label: "완료", icon: CheckCircle2, color: "text-green-600" },
+  FAILED: { label: "실패", icon: XCircle, color: "text-red-600" },
+};
 
-export default async function OrganizationDetailPage({
-  params,
-}: {
-  params: Promise<{ login: string }>;
-}) {
-  const { login } = await params;
-  const user = await getUser();
-
-  if (!user) {
-    redirect("/login");
-  }
-
+async function getDashboardData(orgLogin: string, userId: string) {
+  // 조직 조회 및 권한 확인
   const org = await db.organization.findUnique({
-    where: { login },
+    where: { login: orgLogin },
     include: {
       members: {
-        where: { userId: user.id },
-      },
-      repos: {
-        orderBy: { name: "asc" },
-      },
-      _count: {
-        select: { repos: true, members: true, analysisRuns: true },
+        where: { userId },
       },
     },
   });
@@ -63,213 +47,208 @@ export default async function OrganizationDetailPage({
 
   // 멤버십 확인
   if (org.members.length === 0) {
-    notFound();
+    redirect("/dashboard");
   }
 
-  const isAdmin = org.members[0].role === "ADMIN";
-  const settings = (org.settings as OrgSettings) || {};
+  // 해당 조직의 최근 분석 실행 5개
+  const recentRuns = await db.analysisRun.findMany({
+    where: {
+      orgId: org.id,
+    },
+    include: {
+      user: {
+        select: { login: true, name: true },
+      },
+      _count: {
+        select: { reports: true, workUnits: true },
+      },
+    },
+    orderBy: { createdAt: "desc" },
+    take: 5,
+  });
+
+  // 통계
+  const totalRuns = await db.analysisRun.count({
+    where: { orgId: org.id },
+  });
+
+  const completedRuns = await db.analysisRun.count({
+    where: { orgId: org.id, status: "DONE" },
+  });
+
+  const totalReports = await db.yearlyReport.count({
+    where: {
+      run: { orgId: org.id },
+    },
+  });
+
+  return {
+    org,
+    recentRuns,
+    stats: {
+      totalRuns,
+      completedRuns,
+      totalReports,
+    },
+  };
+}
+
+export default async function OrganizationDashboardPage({
+  params,
+}: {
+  params: Promise<{ login: string }>;
+}) {
+  const { login } = await params;
+  const user = await getUser();
+  if (!user) {
+    redirect("/login");
+  }
+
+  const { org, recentRuns, stats } = await getDashboardData(login, user.id);
 
   return (
     <div className="container py-8 px-4">
-      {/* Header */}
+      {/* Welcome Section */}
       <div className="mb-8">
-        <Button variant="ghost" size="sm" className="mb-4" asChild>
-          <Link href="/organizations">
-            <ArrowLeft className="mr-2 h-4 w-4" />
-            조직 목록
-          </Link>
-        </Button>
-
-        <div className="flex items-start justify-between">
-          <div className="flex items-center gap-4">
-            <Avatar className="h-16 w-16">
-              <AvatarImage src={org.avatarUrl || undefined} />
-              <AvatarFallback className="text-xl">
-                {org.login.charAt(0).toUpperCase()}
-              </AvatarFallback>
-            </Avatar>
-            <div>
-              <h1 className="text-3xl font-bold">{org.name || org.login}</h1>
-              <p className="text-muted-foreground">@{org.login}</p>
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            {org.installationId ? (
-              <Badge variant="outline" className="text-green-600">
-                <CheckCircle2 className="mr-1 h-3 w-3" />
-                App 연결됨
-              </Badge>
-            ) : (
-              <Badge variant="outline" className="text-destructive">
-                <XCircle className="mr-1 h-3 w-3" />
-                App 미연결
-              </Badge>
-            )}
-            {isAdmin && (
-              <Badge variant="secondary">
-                <Settings className="mr-1 h-3 w-3" />
-                관리자
-              </Badge>
-            )}
-          </div>
-        </div>
+        <h1 className="text-3xl font-bold">{org.name || org.login}</h1>
+        <p className="mt-2 text-muted-foreground">
+          조직의 코드 기여를 분석하고 연간 리포트를 생성하세요.
+        </p>
       </div>
 
-      {/* 통계 카드 */}
-      <div className="mb-8 grid gap-4 md:grid-cols-4">
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium">저장소</CardTitle>
-            <GitBranch className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{org._count.repos}개</div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium">멤버</CardTitle>
-            <Users className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{org._count.members}명</div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium">분석 횟수</CardTitle>
-            <BarChart3 className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{org._count.analysisRuns}회</div>
-          </CardContent>
-        </Card>
+      {/* Quick Actions */}
+      <div className="mb-8 grid gap-4 md:grid-cols-3">
         <Card className="hover:border-primary/50 transition-colors">
-          <Link href={`/analysis/new?org=${org.login}`}>
+          <Link href={`/organizations/${login}/analysis/new`}>
             <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-sm font-medium">새 분석</CardTitle>
-              <BarChart3 className="h-4 w-4 text-primary" />
+              <CardTitle className="text-sm font-medium">새 분석 실행</CardTitle>
+              <Plus className="h-4 w-4 text-muted-foreground" />
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold text-primary">시작하기 →</div>
+              <p className="text-2xl font-bold">시작하기</p>
+              <p className="text-xs text-muted-foreground">
+                연도를 선택하여 분석을 시작합니다
+              </p>
+            </CardContent>
+          </Link>
+        </Card>
+
+        <Card className="hover:border-primary/50 transition-colors">
+          <Link href={`/organizations/${login}/settings`}>
+            <CardHeader className="flex flex-row items-center justify-between pb-2">
+              <CardTitle className="text-sm font-medium">조직 설정</CardTitle>
+              <Settings className="h-4 w-4 text-muted-foreground" />
+            </CardHeader>
+            <CardContent>
+              <p className="text-2xl font-bold">관리</p>
+              <p className="text-xs text-muted-foreground">
+                저장소, 멤버 및 설정을 관리합니다
+              </p>
+            </CardContent>
+          </Link>
+        </Card>
+
+        <Card className="hover:border-primary/50 transition-colors">
+          <Link href={`/organizations/${login}/analysis`}>
+            <CardHeader className="flex flex-row items-center justify-between pb-2">
+              <CardTitle className="text-sm font-medium">분석 현황</CardTitle>
+              <BarChart3 className="h-4 w-4 text-muted-foreground" />
+            </CardHeader>
+            <CardContent>
+              <p className="text-2xl font-bold">{stats.completedRuns}회 완료</p>
+              <p className="text-xs text-muted-foreground">
+                총 {stats.totalRuns}회 분석 실행, {stats.totalReports}개 리포트
+              </p>
             </CardContent>
           </Link>
         </Card>
       </div>
 
-      {/* 탭 콘텐츠 */}
-      <Tabs defaultValue="repos" className="space-y-4">
-        <TabsList>
-          <TabsTrigger value="repos">
-            <GitBranch className="mr-2 h-4 w-4" />
-            저장소
-          </TabsTrigger>
-          <TabsTrigger value="members">
-            <Users className="mr-2 h-4 w-4" />
-            멤버
-          </TabsTrigger>
-          <TabsTrigger value="permissions">
-            <Settings className="mr-2 h-4 w-4" />
-            권한
-          </TabsTrigger>
-          {isAdmin && (
-            <TabsTrigger value="settings">
-              <Settings className="mr-2 h-4 w-4" />
-              설정
-            </TabsTrigger>
-          )}
-        </TabsList>
+      {/* Recent Analysis Runs */}
+      <Card>
+        <CardHeader className="flex flex-row items-center justify-between">
+          <div>
+            <CardTitle>최근 분석</CardTitle>
+            <CardDescription>최근 실행된 분석 목록입니다</CardDescription>
+          </div>
+          <Button variant="outline" size="sm" asChild>
+            <Link href={`/organizations/${login}/analysis`}>
+              전체 보기
+              <ArrowRight className="ml-2 h-4 w-4" />
+            </Link>
+          </Button>
+        </CardHeader>
+        <CardContent>
+          {recentRuns.length > 0 ? (
+            <div className="space-y-4">
+              {recentRuns.map((run) => {
+                const config = statusConfig[run.status];
+                const StatusIcon = config.icon;
+                const isRunning = !["DONE", "FAILED"].includes(run.status);
 
-        {/* 저장소 탭 */}
-        <TabsContent value="repos">
-          <Card>
-            <CardHeader>
-              <CardTitle>저장소 목록</CardTitle>
-              <CardDescription>
-                GitHub App으로 접근 가능한 저장소입니다.
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              {org.repos.length > 0 ? (
-                <div className="space-y-2">
-                  {org.repos.map((repo) => (
-                    <div
-                      key={repo.id}
-                      className="flex items-center justify-between rounded-lg border p-3"
-                    >
-                      <div className="flex items-center gap-3">
-                        <GitBranch className="h-4 w-4 text-muted-foreground" />
-                        <div>
-                          <p className="font-medium">{repo.name}</p>
-                          <p className="text-sm text-muted-foreground">
-                            {repo.description || "설명 없음"}
-                          </p>
-                        </div>
+                return (
+                  <Link
+                    key={run.id}
+                    href={`/organizations/${login}/analysis/${run.id}`}
+                    className="flex items-center justify-between rounded-lg border p-4 hover:bg-muted/50 transition-colors"
+                  >
+                    <div className="flex items-center gap-4">
+                      <div className={`${config.color}`}>
+                        <StatusIcon
+                          className={`h-5 w-5 ${isRunning ? "animate-spin" : ""}`}
+                        />
                       </div>
-                      <div className="flex items-center gap-2">
-                        {repo.language && (
-                          <Badge variant="outline">{repo.language}</Badge>
-                        )}
-                        {repo.isArchived && (
-                          <Badge variant="secondary">
-                            <Archive className="mr-1 h-3 w-3" />
-                            아카이브
-                          </Badge>
-                        )}
-                        {repo.isPrivate ? (
-                          <Lock className="h-4 w-4 text-muted-foreground" />
-                        ) : (
-                          <Globe className="h-4 w-4 text-muted-foreground" />
-                        )}
+                      <div>
+                        <p className="font-medium">
+                          {run.user.name || run.userLogin} - {run.year}년
+                        </p>
+                        <p className="text-sm text-muted-foreground">
+                          {run.createdAt.toLocaleDateString("ko-KR", {
+                            year: "numeric",
+                            month: "long",
+                            day: "numeric",
+                          })}
+                        </p>
                       </div>
                     </div>
-                  ))}
-                </div>
-              ) : (
-                <p className="text-center text-muted-foreground py-8">
-                  저장소가 없습니다.
-                </p>
-              )}
-            </CardContent>
-          </Card>
-        </TabsContent>
-
-        {/* 멤버 탭 */}
-        <TabsContent value="members">
-          <OrganizationMembersList orgLogin={org.login} />
-        </TabsContent>
-
-        {/* 권한 탭 */}
-        <TabsContent value="permissions">
-          <Card>
-            <CardHeader>
-              <CardTitle>GitHub App 권한</CardTitle>
-              <CardDescription>
-                시스템이 필요로 하는 GitHub App 권한을 확인하고 관리합니다.
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
+                    <div className="flex items-center gap-4">
+                      <div className="text-right text-sm text-muted-foreground">
+                        <p>{run._count.workUnits} Work Units</p>
+                        <p>{run._count.reports} 리포트</p>
+                      </div>
+                      <Badge
+                        variant={
+                          run.status === "DONE"
+                            ? "default"
+                            : run.status === "FAILED"
+                              ? "destructive"
+                              : "secondary"
+                        }
+                      >
+                        {config.label}
+                      </Badge>
+                    </div>
+                  </Link>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="flex flex-col items-center justify-center py-8 text-center">
+              <FileText className="mb-4 h-12 w-12 text-muted-foreground" />
+              <p className="mb-2 font-medium">아직 분석 기록이 없습니다</p>
+              <p className="mb-4 text-sm text-muted-foreground">
+                첫 번째 분석을 실행해보세요!
+              </p>
               <Button asChild>
-                <Link href={`/organizations/${org.login}/permissions`}>
-                  <Settings className="mr-2 h-4 w-4" />
-                  권한 확인 페이지 열기
+                <Link href={`/organizations/${login}/analysis/new`}>
+                  <Plus className="mr-2 h-4 w-4" />
+                  새 분석 실행
                 </Link>
               </Button>
-            </CardContent>
-          </Card>
-        </TabsContent>
-
-        {/* 설정 탭 (관리자만) */}
-        {isAdmin && (
-          <TabsContent value="settings">
-            <OrganizationSettingsForm
-              orgLogin={org.login}
-              initialSettings={settings}
-            />
-          </TabsContent>
-        )}
-      </Tabs>
+            </div>
+          )}
+        </CardContent>
+      </Card>
     </div>
   );
 }
-

@@ -2,7 +2,6 @@
 
 import { useState, useEffect } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
   Select,
@@ -19,16 +18,9 @@ import {
   Minus,
   Loader2,
   AlertCircle,
-  Building2,
   User,
 } from "lucide-react";
 import { ReportStats } from "@/types";
-
-interface Organization {
-  id: string;
-  login: string;
-  name: string | null;
-}
 
 interface YearlyReportData {
   year: number;
@@ -40,17 +32,14 @@ interface YearlyReportData {
 }
 
 interface CompareReportsContentProps {
-  organizations: Organization[];
-  initialOrgLogin?: string;
+  orgLogin: string;
   initialUserLogin?: string;
 }
 
 export function CompareReportsContent({
-  organizations,
-  initialOrgLogin,
+  orgLogin,
   initialUserLogin,
 }: CompareReportsContentProps) {
-  const [selectedOrg, setSelectedOrg] = useState(initialOrgLogin || "");
   const [selectedUser, setSelectedUser] = useState(initialUserLogin || "");
   const [members, setMembers] = useState<Array<{ login: string; name: string | null }>>([]);
   const [reports, setReports] = useState<YearlyReportData[]>([]);
@@ -58,18 +47,12 @@ export function CompareReportsContent({
   const [isLoadingReports, setIsLoadingReports] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // 조직 선택 시 멤버 조회
+  // 멤버 조회
   useEffect(() => {
-    if (!selectedOrg) {
-      setMembers([]);
-      setSelectedUser("");
-      return;
-    }
-
     const fetchMembers = async () => {
       setIsLoadingMembers(true);
       try {
-        const res = await fetch(`/api/organizations/${selectedOrg}/members`);
+        const res = await fetch(`/api/organizations/${orgLogin}/members`);
         if (!res.ok) throw new Error("멤버 조회 실패");
         const data = await res.json();
         setMembers(data.members.map((m: { login: string; name: string | null }) => ({
@@ -84,11 +67,11 @@ export function CompareReportsContent({
     };
 
     fetchMembers();
-  }, [selectedOrg]);
+  }, [orgLogin]);
 
   // 사용자 선택 시 리포트 조회
   useEffect(() => {
-    if (!selectedOrg || !selectedUser) {
+    if (!selectedUser) {
       setReports([]);
       return;
     }
@@ -98,7 +81,7 @@ export function CompareReportsContent({
       setError(null);
       try {
         const res = await fetch(
-          `/api/reports/compare?org=${selectedOrg}&user=${selectedUser}`
+          `/api/reports/compare?org=${orgLogin}&user=${selectedUser}`
         );
         if (!res.ok) throw new Error("리포트 조회 실패");
         const data = await res.json();
@@ -112,7 +95,7 @@ export function CompareReportsContent({
     };
 
     fetchReports();
-  }, [selectedOrg, selectedUser]);
+  }, [orgLogin, selectedUser]);
 
   const getChangeIndicator = (current: number, previous: number) => {
     const change = ((current - previous) / previous) * 100;
@@ -133,51 +116,31 @@ export function CompareReportsContent({
           <CardTitle className="text-lg">조회 조건</CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="grid gap-4 md:grid-cols-2">
-            <div className="space-y-2">
-              <Label className="flex items-center gap-2">
-                <Building2 className="h-4 w-4" />
-                조직
-              </Label>
-              <Select value={selectedOrg} onValueChange={setSelectedOrg}>
-                <SelectTrigger>
-                  <SelectValue placeholder="조직 선택" />
-                </SelectTrigger>
-                <SelectContent>
-                  {organizations.map((org) => (
-                    <SelectItem key={org.id} value={org.login}>
-                      {org.name || org.login}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-2">
-              <Label className="flex items-center gap-2">
-                <User className="h-4 w-4" />
-                팀원
-              </Label>
-              <Select
-                value={selectedUser}
-                onValueChange={setSelectedUser}
-                disabled={!selectedOrg || isLoadingMembers}
-              >
-                <SelectTrigger>
-                  <SelectValue
-                    placeholder={
-                      isLoadingMembers ? "로딩 중..." : "팀원 선택"
-                    }
-                  />
-                </SelectTrigger>
-                <SelectContent>
-                  {members.map((member) => (
-                    <SelectItem key={member.login} value={member.login}>
-                      {member.name || member.login} (@{member.login})
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
+          <div className="space-y-2">
+            <Label className="flex items-center gap-2">
+              <User className="h-4 w-4" />
+              팀원
+            </Label>
+            <Select
+              value={selectedUser}
+              onValueChange={setSelectedUser}
+              disabled={isLoadingMembers}
+            >
+              <SelectTrigger>
+                <SelectValue
+                  placeholder={
+                    isLoadingMembers ? "로딩 중..." : "팀원 선택"
+                  }
+                />
+              </SelectTrigger>
+              <SelectContent>
+                {members.map((member) => (
+                  <SelectItem key={member.login} value={member.login}>
+                    {member.name || member.login} (@{member.login})
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
         </CardContent>
       </Card>
@@ -341,11 +304,11 @@ export function CompareReportsContent({
         </Card>
       )}
 
-      {!selectedOrg && (
+      {!selectedUser && (
         <Card>
           <CardContent className="py-12 text-center">
             <p className="text-muted-foreground">
-              조직과 팀원을 선택하여 연도별 비교를 확인하세요.
+              팀원을 선택하여 연도별 비교를 확인하세요.
             </p>
           </CardContent>
         </Card>
@@ -353,4 +316,3 @@ export function CompareReportsContent({
     </div>
   );
 }
-
