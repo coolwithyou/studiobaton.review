@@ -54,6 +54,14 @@ export async function GET(
         commitCount?: number;
         error?: string;
       }>;
+      clusteringProgress?: {
+        stage: "loading" | "clustering" | "saving";
+        totalCommits: number;
+        processedCommits: number;
+        totalRepos: number;
+        processedRepos: number;
+        createdWorkUnits: number;
+      };
     } | null;
 
     const percentage = progress?.total
@@ -79,6 +87,7 @@ export async function GET(
         percentage,
         message: currentMessage,
         repoProgress: progress?.repoProgress || [],
+        clusteringProgress: progress?.clusteringProgress,
       },
       workUnitCount: run._count.workUnits,
       reportCount: run._count.reports,

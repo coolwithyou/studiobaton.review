@@ -102,6 +102,18 @@ function groupByTimeGap(
 // 경로 유사도 기반 세분화
 // ============================================
 
+// 디렉토리 캐시 (함수 외부에 선언하여 호출 간 유지)
+const directoryCacheMap = new WeakMap<CommitWithFiles, Set<string>>();
+
+function getDirectoriesForCommit(commit: CommitWithFiles): Set<string> {
+  if (!directoryCacheMap.has(commit)) {
+    const paths = getFilePaths(commit);
+    const dirs = new Set(paths.map(getDirectory));
+    directoryCacheMap.set(commit, dirs);
+  }
+  return directoryCacheMap.get(commit)!;
+}
+
 function refineByPathSimilarity(
   commits: CommitWithFiles[],
   minOverlap: number
@@ -116,15 +128,17 @@ function refineByPathSimilarity(
 
     const group = [commits[i]];
     used.add(i);
-    const basePaths = getFilePaths(commits[i]);
+    const baseDirs = getDirectoriesForCommit(commits[i]);
 
     for (let j = i + 1; j < commits.length; j++) {
       if (used.has(j)) continue;
 
-      const similarity = calculatePathSimilarity(
-        basePaths,
-        getFilePaths(commits[j])
-      );
+      const targetDirs = getDirectoriesForCommit(commits[j]);
+
+      // Jaccard similarity 계산 (캐시된 디렉토리 사용)
+      const intersection = [...baseDirs].filter((d) => targetDirs.has(d)).length;
+      const union = new Set([...baseDirs, ...targetDirs]).size;
+      const similarity = union > 0 ? intersection / union : 0;
 
       if (similarity >= minOverlap) {
         group.push(commits[j]);
@@ -139,21 +153,8 @@ function refineByPathSimilarity(
 }
 
 // ============================================
-// 경로 유사도 계산 (Jaccard Similarity)
+// 경로 유사도 계산 (Jaccard Similarity) - 캐싱 버전
 // ============================================
-
-function calculatePathSimilarity(pathsA: string[], pathsB: string[]): number {
-  if (pathsA.length === 0 || pathsB.length === 0) return 0;
-
-  // 디렉토리 수준으로 정규화
-  const dirsA = new Set(pathsA.map(getDirectory));
-  const dirsB = new Set(pathsB.map(getDirectory));
-
-  const intersection = [...dirsA].filter((d) => dirsB.has(d)).length;
-  const union = new Set([...dirsA, ...dirsB]).size;
-
-  return union > 0 ? intersection / union : 0;
-}
 
 function getDirectory(path: string): string {
   const parts = path.split("/");

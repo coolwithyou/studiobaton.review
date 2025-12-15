@@ -35,6 +35,15 @@ interface RepoProgress {
   error?: string;
 }
 
+interface ClusteringProgress {
+  stage: "loading" | "clustering" | "saving";
+  totalCommits: number;
+  processedCommits: number;
+  totalRepos: number;
+  processedRepos: number;
+  createdWorkUnits: number;
+}
+
 interface ProgressData {
   status: RunStatus;
   progress: {
@@ -45,6 +54,7 @@ interface ProgressData {
     currentRepo?: string;
     message?: string;
     repoProgress?: RepoProgress[];
+    clusteringProgress?: ClusteringProgress;
   } | null;
   error?: string;
 }
@@ -79,9 +89,7 @@ interface ProgressMonitorProps {
 
 const PHASES = [
   { key: "QUEUED", label: "대기 중", description: "분석 시작 대기" },
-  { key: "SCANNING_REPOS", label: "저장소 스캔", description: "저장소 목록 조회 중" },
-  { key: "SCANNING_COMMITS", label: "커밋 수집", description: "커밋 데이터 수집 중" },
-  { key: "BUILDING_UNITS", label: "Work Unit 생성", description: "작업 단위 클러스터링" },
+  { key: "BUILDING_UNITS", label: "Work Unit 생성", description: "커밋 클러스터링 및 분석 단위 생성" },
   { key: "AWAITING_AI_CONFIRMATION", label: "AI 리뷰 대기", description: "AI 리뷰 시작 확인 필요" },
   { key: "REVIEWING", label: "AI 리뷰", description: "AI 코드 리뷰 진행 중" },
   { key: "FINALIZING", label: "리포트 생성", description: "연간 리포트 생성 중" },
@@ -118,9 +126,10 @@ export function ProgressMonitor({
   const [aiConfirmInfo, setAiConfirmInfo] = useState<AiConfirmInfo | null>(null);
   const [isStartingAi, setIsStartingAi] = useState(false);
   const [showResumeInfo, setShowResumeInfo] = useState(false);
+  const [clusteringProgress, setClusteringProgress] = useState<ClusteringProgress | null>(null);
 
   const isRunning = !["DONE", "FAILED", "AWAITING_AI_CONFIRMATION"].includes(status);
-  const canCancel = ["QUEUED", "SCANNING_REPOS", "SCANNING_COMMITS", "BUILDING_UNITS"].includes(status);
+  const canCancel = ["QUEUED", "BUILDING_UNITS"].includes(status);
   const canDelete = ["FAILED", "QUEUED"].includes(status);
 
   const percentage = progress?.total
@@ -143,6 +152,7 @@ export function ProgressMonitor({
         setProgress(data.progress);
         setRepoProgress(data.progress?.repoProgress || []);
         setCurrentMessage(data.progress?.message || null);
+        setClusteringProgress(data.progress?.clusteringProgress || null);
 
         if (data.error) {
           setError(data.error);
@@ -310,10 +320,10 @@ export function ProgressMonitor({
               status === "DONE"
                 ? "default"
                 : status === "FAILED"
-                ? "destructive"
-                : status === "AWAITING_AI_CONFIRMATION"
-                ? "outline"
-                : "secondary"
+                  ? "destructive"
+                  : status === "AWAITING_AI_CONFIRMATION"
+                    ? "outline"
+                    : "secondary"
             }
           >
             {statusLabels[status]}
@@ -373,13 +383,12 @@ export function ProgressMonitor({
               return (
                 <div
                   key={phase.key}
-                  className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium transition-colors ${
-                    isCurrent
+                  className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium transition-colors ${isCurrent
                       ? "bg-primary text-primary-foreground"
                       : isCompleted
-                      ? "bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300"
-                      : "bg-muted text-muted-foreground"
-                  }`}
+                        ? "bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300"
+                        : "bg-muted text-muted-foreground"
+                    }`}
                 >
                   {isCompleted ? (
                     <CheckCircle2 className="h-3 w-3" />
@@ -400,136 +409,147 @@ export function ProgressMonitor({
           </div>
         )}
 
-        {/* 단계별 진행률 */}
-        <div className="space-y-4">
-          <h4 className="text-sm font-medium">단계별 진행 상황</h4>
-          
-          {/* 1단계: 저장소 스캔 */}
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <span className="text-sm font-medium flex items-center gap-2">
-                <span className="flex h-6 w-6 items-center justify-center rounded-full bg-primary/10 text-xs font-bold text-primary">
-                  1
-                </span>
-                저장소 스캔
-              </span>
-              {status === "SCANNING_REPOS" ? (
-                <Badge variant="secondary">
-                  <Loader2 className="mr-1 h-3 w-3 animate-spin" />
-                  진행 중
-                </Badge>
-              ) : currentPhaseIndex > PHASES.findIndex(p => p.key === "SCANNING_REPOS") ? (
-                <Badge variant="default">
-                  <CheckCircle2 className="mr-1 h-3 w-3" />
-                  완료
-                </Badge>
-              ) : (
-                <Badge variant="outline">대기</Badge>
-              )}
-            </div>
-            {status === "SCANNING_REPOS" && (
-              <div className="ml-8">
-                <Progress value={50} className="h-2" />
-                <p className="text-xs text-muted-foreground mt-1">
-                  조직의 저장소 목록을 조회하고 있습니다...
-                </p>
-              </div>
-            )}
-            {currentPhaseIndex > PHASES.findIndex(p => p.key === "SCANNING_REPOS") && progress && (
-              <div className="ml-8">
-                <Progress value={100} className="h-2" />
-                <p className="text-xs text-muted-foreground mt-1">
-                  {progress.total || 0}개 저장소 발견
-                </p>
-              </div>
-            )}
-          </div>
+        {/* Work Unit 생성 상세 진행률 */}
+        {status === "BUILDING_UNITS" && clusteringProgress && (
+          <div className="space-y-4">
+            <h4 className="text-sm font-medium">Work Unit 생성 진행 상황</h4>
 
-          {/* 2단계: 커밋 수집 */}
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <span className="text-sm font-medium flex items-center gap-2">
-                <span className="flex h-6 w-6 items-center justify-center rounded-full bg-primary/10 text-xs font-bold text-primary">
-                  2
+            {/* 단계 1: 커밋 로딩 */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-medium flex items-center gap-2">
+                  <span className="flex h-6 w-6 items-center justify-center rounded-full bg-primary/10 text-xs font-bold text-primary">
+                    1
+                  </span>
+                  커밋 로딩
                 </span>
-                커밋 수집
-              </span>
-              {status === "SCANNING_COMMITS" ? (
-                <Badge variant="secondary">
-                  <Loader2 className="mr-1 h-3 w-3 animate-spin" />
-                  진행 중
-                </Badge>
-              ) : currentPhaseIndex > PHASES.findIndex(p => p.key === "SCANNING_COMMITS") ? (
-                <Badge variant="default">
-                  <CheckCircle2 className="mr-1 h-3 w-3" />
-                  완료
-                </Badge>
-              ) : (
-                <Badge variant="outline">대기</Badge>
+                {clusteringProgress.stage === "loading" ? (
+                  <Badge variant="secondary">
+                    <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                    진행 중
+                  </Badge>
+                ) : (
+                  <Badge variant="default">
+                    <CheckCircle2 className="mr-1 h-3 w-3" />
+                    완료
+                  </Badge>
+                )}
+              </div>
+              {clusteringProgress.stage !== "loading" && (
+                <div className="ml-8">
+                  <Progress value={100} className="h-2" />
+                  <p className="text-xs text-muted-foreground mt-1">
+                    {clusteringProgress.totalCommits.toLocaleString()}개 커밋 로드 완료
+                  </p>
+                </div>
               )}
             </div>
-            {status === "SCANNING_COMMITS" && progress && progress.total > 0 && (
-              <div className="ml-8">
-                <Progress value={percentage} className="h-2" />
-                <p className="text-xs text-muted-foreground mt-1">
-                  {progress.completed} / {progress.total} 저장소 ({percentage}%)
-                  {progress.failed > 0 && (
-                    <span className="text-destructive ml-1">• 실패: {progress.failed}</span>
-                  )}
-                </p>
-              </div>
-            )}
-            {currentPhaseIndex > PHASES.findIndex(p => p.key === "SCANNING_COMMITS") && progress && (
-              <div className="ml-8">
-                <Progress value={100} className="h-2" />
-                <p className="text-xs text-muted-foreground mt-1">
-                  {progress.completed || 0}개 저장소에서 커밋 수집 완료
-                </p>
-              </div>
-            )}
-          </div>
 
-          {/* 3단계: Work Unit 생성 */}
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <span className="text-sm font-medium flex items-center gap-2">
-                <span className="flex h-6 w-6 items-center justify-center rounded-full bg-primary/10 text-xs font-bold text-primary">
-                  3
+            {/* 단계 2: 클러스터링 */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-medium flex items-center gap-2">
+                  <span className="flex h-6 w-6 items-center justify-center rounded-full bg-primary/10 text-xs font-bold text-primary">
+                    2
+                  </span>
+                  저장소별 클러스터링
                 </span>
-                Work Unit 생성
-              </span>
-              {status === "BUILDING_UNITS" ? (
-                <Badge variant="secondary">
-                  <Loader2 className="mr-1 h-3 w-3 animate-spin" />
-                  진행 중
-                </Badge>
-              ) : currentPhaseIndex > PHASES.findIndex(p => p.key === "BUILDING_UNITS") ? (
-                <Badge variant="default">
-                  <CheckCircle2 className="mr-1 h-3 w-3" />
-                  완료
-                </Badge>
-              ) : (
-                <Badge variant="outline">대기</Badge>
+                {clusteringProgress.stage === "clustering" ? (
+                  <Badge variant="secondary">
+                    <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                    진행 중
+                  </Badge>
+                ) : clusteringProgress.stage === "saving" ? (
+                  <Badge variant="default">
+                    <CheckCircle2 className="mr-1 h-3 w-3" />
+                    완료
+                  </Badge>
+                ) : (
+                  <Badge variant="outline">대기</Badge>
+                )}
+              </div>
+              {clusteringProgress.stage === "clustering" && clusteringProgress.totalRepos > 0 && (
+                <div className="ml-8">
+                  <Progress
+                    value={(clusteringProgress.processedRepos / clusteringProgress.totalRepos) * 100}
+                    className="h-2"
+                  />
+                  <p className="text-xs text-muted-foreground mt-1">
+                    {clusteringProgress.processedRepos} / {clusteringProgress.totalRepos} 저장소
+                    ({Math.round((clusteringProgress.processedRepos / clusteringProgress.totalRepos) * 100)}%)
+                  </p>
+                </div>
+              )}
+              {clusteringProgress.stage === "saving" && (
+                <div className="ml-8">
+                  <Progress value={100} className="h-2" />
+                  <p className="text-xs text-muted-foreground mt-1">
+                    {clusteringProgress.totalRepos}개 저장소 클러스터링 완료
+                  </p>
+                </div>
               )}
             </div>
-            {status === "BUILDING_UNITS" && (
-              <div className="ml-8">
-                <Progress value={70} className="h-2" />
-                <p className="text-xs text-muted-foreground mt-1">
-                  커밋을 클러스터링하여 작업 단위를 생성하고 있습니다...
-                </p>
+
+            {/* 단계 3: Work Unit 저장 */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-medium flex items-center gap-2">
+                  <span className="flex h-6 w-6 items-center justify-center rounded-full bg-primary/10 text-xs font-bold text-primary">
+                    3
+                  </span>
+                  Work Unit 저장
+                </span>
+                {clusteringProgress.stage === "saving" ? (
+                  <Badge variant="secondary">
+                    <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                    진행 중
+                  </Badge>
+                ) : (
+                  <Badge variant="outline">대기</Badge>
+                )}
               </div>
-            )}
-            {currentPhaseIndex > PHASES.findIndex(p => p.key === "BUILDING_UNITS") && (
-              <div className="ml-8">
-                <Progress value={100} className="h-2" />
-                <p className="text-xs text-muted-foreground mt-1">
-                  Work Unit 생성 완료
-                </p>
+              {clusteringProgress.stage === "saving" && (
+                <div className="ml-8">
+                  <Progress value={80} className="h-2" />
+                  <p className="text-xs text-muted-foreground mt-1">
+                    {clusteringProgress.createdWorkUnits.toLocaleString()}개 Work Unit 생성 중...
+                  </p>
+                </div>
+              )}
+            </div>
+
+            {/* 통계 요약 */}
+            <div className="border-t pt-4 mt-4">
+              <div className="grid grid-cols-3 gap-4 text-sm">
+                <div className="text-center">
+                  <p className="text-muted-foreground">총 커밋</p>
+                  <p className="text-lg font-semibold">{clusteringProgress.totalCommits.toLocaleString()}</p>
+                </div>
+                <div className="text-center">
+                  <p className="text-muted-foreground">저장소</p>
+                  <p className="text-lg font-semibold">{clusteringProgress.totalRepos}</p>
+                </div>
+                <div className="text-center">
+                  <p className="text-muted-foreground">생성된 Work Unit</p>
+                  <p className="text-lg font-semibold text-primary">{clusteringProgress.createdWorkUnits}</p>
+                </div>
               </div>
-            )}
+            </div>
           </div>
-        </div>
+        )}
+
+        {/* Work Unit 생성 완료 후 */}
+        {status === "BUILDING_UNITS" && !clusteringProgress && (
+          <div className="space-y-2">
+            <h4 className="text-sm font-medium">Work Unit 생성 진행 상황</h4>
+            <div className="ml-2">
+              <Progress value={50} className="h-2" />
+              <p className="text-xs text-muted-foreground mt-1">
+                작업을 준비하고 있습니다...
+              </p>
+            </div>
+          </div>
+        )}
 
         {/* 정량적 중간 리포트 링크 (AWAITING_AI_CONFIRMATION 상태) */}
         {status === "AWAITING_AI_CONFIRMATION" && targetUser && (

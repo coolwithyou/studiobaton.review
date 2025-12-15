@@ -13,7 +13,6 @@ import { getInstallationOctokit, getOrganizationRepos, getCommits, getCommitDeta
 
 const CONCURRENT_REPOS = 5;
 const CONCURRENT_COMMITS = 10;
-const DB_BATCH_SIZE = 100;
 
 interface SyncProgress {
   totalRepos: number;
@@ -36,11 +35,12 @@ interface SyncProgress {
   }>;
 }
 
-// 진행률 업데이트
+// 진행률 업데이트 (원자적 업데이트)
 async function updateSyncProgress(
   syncJobId: string,
   updates: Partial<SyncProgress> & { status?: string; error?: string }
 ) {
+  // DB에서 최신 상태를 조회하고 업데이트 (원자적 작업)
   const syncJob = await db.commitSyncJob.findUnique({
     where: { id: syncJobId },
   });
@@ -54,11 +54,6 @@ async function updateSyncProgress(
     totalCommits: 0,
   };
 
-  const newProgress = {
-    ...currentProgress,
-    ...updates,
-  };
-
   // status와 error는 progress가 아닌 별도 필드
   const { status, error, ...progressUpdates } = updates;
 
@@ -68,6 +63,53 @@ async function updateSyncProgress(
       ...(status && { status: status as any }),
       ...(error !== undefined && { error }),
       progress: JSON.parse(JSON.stringify({ ...currentProgress, ...progressUpdates })),
+    },
+  });
+}
+
+// 저장소별 상태만 원자적으로 업데이트 (실시간 카운트 재계산)
+async function updateRepoStatus(
+  syncJobId: string,
+  repoFullName: string,
+  status: "pending" | "syncing" | "done" | "failed",
+  extraData?: { commits?: number; error?: string }
+) {
+  const syncJob = await db.commitSyncJob.findUnique({
+    where: { id: syncJobId },
+  });
+
+  if (!syncJob) return;
+
+  const currentProgress = (syncJob.progress as unknown as SyncProgress) || {
+    totalRepos: 0,
+    completedRepos: 0,
+    failedRepos: 0,
+    totalCommits: 0,
+    repoProgress: [],
+  };
+
+  // 해당 저장소의 상태만 업데이트
+  const updatedRepoProgress = (currentProgress.repoProgress || []).map((rp) =>
+    rp.repoName === repoFullName
+      ? { ...rp, status, ...extraData }
+      : rp
+  );
+
+  // 실시간 카운트 재계산
+  const completedRepos = updatedRepoProgress.filter((r) => r.status === "done").length;
+  const failedRepos = updatedRepoProgress.filter((r) => r.status === "failed").length;
+  const totalCommits = updatedRepoProgress.reduce((sum, r) => sum + (r.commits || 0), 0);
+
+  await db.commitSyncJob.update({
+    where: { id: syncJobId },
+    data: {
+      progress: JSON.parse(JSON.stringify({
+        ...currentProgress,
+        repoProgress: updatedRepoProgress,
+        completedRepos,
+        failedRepos,
+        totalCommits,
+      })),
     },
   });
 }
@@ -235,15 +277,12 @@ async function syncCommitsForRepo(
   const since = `${year}-01-01T00:00:00Z`;
   const until = `${year}-12-31T23:59:59Z`;
 
-  // 진행 상태 업데이트
-  const currentProgress = (syncJob.progress as unknown as SyncProgress) || {};
-  const repoProgress = (currentProgress.repoProgress || []).map((rp) =>
-    rp.repoName === repoFullName ? { ...rp, status: "syncing" as const } : rp
-  );
+  // 진행 상태 업데이트 (syncing으로 변경)
+  await updateRepoStatus(syncJobId, repoFullName, "syncing");
 
+  // currentRepo 업데이트
   await updateSyncProgress(syncJobId, {
     currentRepo: repoFullName,
-    repoProgress,
   });
 
   try {
@@ -261,38 +300,55 @@ async function syncCommitsForRepo(
     console.log(`[Sync] Found ${totalCommits} commits for ${repoFullName}`);
 
     if (totalCommits === 0) {
-      // 완료 상태로 업데이트
-      const updatedProgress = (currentProgress.repoProgress || []).map((rp) =>
-        rp.repoName === repoFullName
-          ? { ...rp, status: "done" as const, commits: 0 }
-          : rp
-      );
-
-      await updateSyncProgress(syncJobId, {
-        repoProgress: updatedProgress,
-        completedRepos: (currentProgress.completedRepos || 0) + 1,
-      });
-
+      // 완료 상태로 업데이트 (원자적)
+      await updateRepoStatus(syncJobId, repoFullName, "done", { commits: 0 });
       return { totalCommits: 0, savedCommits: 0, prs: 0 };
     }
 
-    // 병렬로 커밋 상세 조회
+    // 이미 동기화된 커밋 SHA 조회 (스킵용)
+    const existingCommits = await db.commit.findMany({
+      where: {
+        repoId: repo.id,
+        sha: { in: commits.map((c) => c.sha) },
+      },
+      select: { sha: true },
+    });
+    const existingShas = new Set(existingCommits.map((c) => c.sha));
+
+    // 새 커밋만 필터링
+    const newCommits = commits.filter((c) => !existingShas.has(c.sha));
+    const skippedCount = commits.length - newCommits.length;
+
+    if (skippedCount > 0) {
+      console.log(`[Sync] Skipping ${skippedCount} already synced commits for ${repoFullName}`);
+    }
+
+    if (newCommits.length === 0) {
+      // 모든 커밋이 이미 동기화됨
+      console.log(`[Sync] All ${totalCommits} commits already synced for ${repoFullName}`);
+      await updateRepoStatus(syncJobId, repoFullName, "done", { commits: totalCommits });
+      return { totalCommits, savedCommits: 0, prs: 0 };
+    }
+
+    console.log(`[Sync] Fetching details for ${newCommits.length} new commits...`);
+
+    // 새 커밋만 상세 조회 (병렬)
     const limit = pLimit(CONCURRENT_COMMITS);
-    const detailsPromises = commits.map((commit) =>
+    const detailsPromises = newCommits.map((commit) =>
       limit(() => getCommitDetails(octokit, owner, repoName, commit.sha))
     );
 
     const allDetails = await Promise.all(detailsPromises);
 
-    // 커밋 저장 (upsert - 기존 커밋 유지)
+    // 커밋 저장
     let savedCommits = 0;
     const commitIdMap = new Map<string, string>();
 
     for (let i = 0; i < allDetails.length; i++) {
       const details = allDetails[i];
       try {
-        // 진행률 업데이트 (10개마다 또는 첫/마지막 커밋)
-        if (i === 0 || i === allDetails.length - 1 || i % 10 === 0) {
+        // 진행률 업데이트 (50개마다 또는 첫/마지막 커밋)
+        if (i === 0 || i === allDetails.length - 1 || i % 50 === 0) {
           await updateSyncProgress(syncJobId, {
             currentCommit: {
               sha: details.sha.substring(0, 7),
@@ -311,7 +367,7 @@ async function syncCommitsForRepo(
           update: {},
         });
 
-        // 커밋 upsert
+        // 커밋 저장 (신규만이므로 create 시도, 실패 시 upsert)
         const savedCommit = await db.commit.upsert({
           where: {
             repoId_sha: {
@@ -331,7 +387,6 @@ async function syncCommitsForRepo(
             filesChanged: details.files.length,
           },
           update: {
-            // 기존 커밋이 있어도 통계 업데이트
             additions: details.stats.additions,
             deletions: details.stats.deletions,
             filesChanged: details.files.length,
@@ -341,26 +396,31 @@ async function syncCommitsForRepo(
 
         commitIdMap.set(details.sha, savedCommit.id);
 
-        // 파일 정보 저장
-        for (const file of details.files) {
-          await db.commitFile.upsert({
-            where: {
-              id: `${savedCommit.id}-${file.path}`.slice(0, 255),
-            },
-            create: {
-              id: `${savedCommit.id}-${file.path}`.slice(0, 255),
-              commitId: savedCommit.id,
-              path: file.path,
-              status: file.status || "modified",
-              additions: file.additions,
-              deletions: file.deletions,
-            },
-            update: {
-              status: file.status || "modified",
-              additions: file.additions,
-              deletions: file.deletions,
-            },
-          });
+        // 파일 정보 배치 저장 (createMany 사용 가능한 경우)
+        if (details.files.length > 0) {
+          // 파일별로 upsert (Prisma에서 createMany는 upsert 지원 안함)
+          await Promise.all(
+            details.files.map((file) =>
+              db.commitFile.upsert({
+                where: {
+                  id: `${savedCommit.id}-${file.path}`.slice(0, 255),
+                },
+                create: {
+                  id: `${savedCommit.id}-${file.path}`.slice(0, 255),
+                  commitId: savedCommit.id,
+                  path: file.path,
+                  status: file.status || "modified",
+                  additions: file.additions,
+                  deletions: file.deletions,
+                },
+                update: {
+                  status: file.status || "modified",
+                  additions: file.additions,
+                  deletions: file.deletions,
+                },
+              })
+            )
+          );
         }
 
         savedCommits++;
@@ -369,24 +429,16 @@ async function syncCommitsForRepo(
       }
     }
 
-    console.log(`[Sync] Saved ${savedCommits}/${totalCommits} commits for ${repoFullName}`);
+    console.log(`[Sync] Saved ${savedCommits} new commits (${skippedCount} skipped) for ${repoFullName}`);
 
     // PR 정보 동기화
     const syncedPRs = await syncPullRequestsForRepo(octokit, repoFullName, repo.id, year);
 
-    // 완료 상태로 업데이트
-    const updatedProgress = (currentProgress.repoProgress || []).map((rp) =>
-      rp.repoName === repoFullName
-        ? { ...rp, status: "done" as const, commits: savedCommits }
-        : rp
-    );
+    // 완료 상태로 업데이트 (원자적) - 총 커밋 수 (새 커밋 + 기존 커밋)
+    await updateRepoStatus(syncJobId, repoFullName, "done", { commits: totalCommits });
 
-    const completedCount = updatedProgress.filter((r) => r.status === "done").length;
-
+    // currentCommit 클리어 (totalCommits는 최종 시점에서 계산)
     await updateSyncProgress(syncJobId, {
-      repoProgress: updatedProgress,
-      completedRepos: completedCount,
-      totalCommits: (currentProgress.totalCommits || 0) + savedCommits,
       currentCommit: undefined, // 커밋 처리 완료
     });
 
@@ -394,18 +446,9 @@ async function syncCommitsForRepo(
   } catch (error) {
     console.error(`[Sync] Error syncing ${repoFullName}:`, error);
 
-    // 실패 상태로 업데이트
-    const updatedProgress = (currentProgress.repoProgress || []).map((rp) =>
-      rp.repoName === repoFullName
-        ? { ...rp, status: "failed" as const, error: String(error) }
-        : rp
-    );
-
-    const failedCount = updatedProgress.filter((r) => r.status === "failed").length;
-
-    await updateSyncProgress(syncJobId, {
-      repoProgress: updatedProgress,
-      failedRepos: failedCount,
+    // 실패 상태로 업데이트 (원자적)
+    await updateRepoStatus(syncJobId, repoFullName, "failed", {
+      error: String(error)
     });
 
     throw error;
@@ -510,14 +553,48 @@ export async function runCommitSync(syncJobId: string): Promise<void> {
 
     console.log(`[Sync] ===== Sync completed: ${successCount}/${repos.length} repos =====`);
 
-    // 완료 상태로 업데이트
-    await db.commitSyncJob.update({
+    // 최종 진행률 재계산 (레이스 컨디션 방지)
+    const finalSyncJob = await db.commitSyncJob.findUnique({
       where: { id: syncJobId },
-      data: {
-        status: "COMPLETED",
-        finishedAt: new Date(),
-      },
     });
+
+    if (finalSyncJob) {
+      const finalProgress = (finalSyncJob.progress as unknown as SyncProgress) || {};
+      const repoProgress = finalProgress.repoProgress || [];
+
+      // repoProgress 배열에서 실제 완료/실패 수 및 총 커밋 수 계산
+      const completedCount = repoProgress.filter((r) => r.status === "done").length;
+      const failedCount = repoProgress.filter((r) => r.status === "failed").length;
+      const totalCommitsCount = repoProgress.reduce((sum, r) => sum + (r.commits || 0), 0);
+
+      console.log(`[Sync] Final count - Completed: ${completedCount}, Failed: ${failedCount}, Total: ${repos.length}, Commits: ${totalCommitsCount}`);
+
+      // 최종 카운트로 업데이트 (정확한 통계)
+      await db.commitSyncJob.update({
+        where: { id: syncJobId },
+        data: {
+          status: "COMPLETED",
+          finishedAt: new Date(),
+          progress: JSON.parse(JSON.stringify({
+            ...finalProgress,
+            completedRepos: completedCount,
+            failedRepos: failedCount,
+            totalCommits: totalCommitsCount,
+            currentRepo: undefined,
+            currentCommit: undefined,
+          })),
+        },
+      });
+    } else {
+      // fallback: syncJob을 찾을 수 없는 경우
+      await db.commitSyncJob.update({
+        where: { id: syncJobId },
+        data: {
+          status: "COMPLETED",
+          finishedAt: new Date(),
+        },
+      });
+    }
   } catch (error) {
     console.error(`[Sync] Sync failed for ${syncJobId}:`, error);
 

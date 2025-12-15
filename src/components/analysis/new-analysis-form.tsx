@@ -34,6 +34,7 @@ import {
   CheckCircle2,
   XCircle,
 } from "lucide-react";
+import { PermissionErrorDialog } from "@/components/analysis/permission-error-dialog";
 
 interface Member {
   login: string;
@@ -73,6 +74,12 @@ export function NewAnalysisForm({ orgLogin }: NewAnalysisFormProps) {
   const [syncJobId, setSyncJobId] = useState<string | null>(null);
   const [isLoadingSync, setIsLoadingSync] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
+
+  // 권한 에러 다이얼로그
+  const [showPermissionDialog, setShowPermissionDialog] = useState(false);
+  const [permissionError, setPermissionError] = useState<{
+    missingPermission?: string;
+  } | null>(null);
 
   const allSelected = members.length > 0 && selectedUsers.length === members.length;
 
@@ -168,6 +175,16 @@ export function NewAnalysisForm({ orgLogin }: NewAnalysisFormProps) {
 
       if (!res.ok) {
         const data = await res.json();
+
+        // 권한 에러 처리
+        if (res.status === 403 && data.permissionError) {
+          setPermissionError({
+            missingPermission: data.missingPermission,
+          });
+          setShowPermissionDialog(true);
+          return;
+        }
+
         throw new Error(data.error || "동기화 시작 실패");
       }
 
@@ -253,247 +270,256 @@ export function NewAnalysisForm({ orgLogin }: NewAnalysisFormProps) {
   };
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>분석 설정</CardTitle>
-        <CardDescription>
-          연도와 대상 사용자를 선택합니다.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-6">
-        {/* 연도 선택 */}
-        <div className="space-y-2">
-          <Label className="flex items-center gap-2">
-            <Calendar className="h-4 w-4" />
-            연도
-          </Label>
-          <Select value={selectedYear} onValueChange={setSelectedYear}>
-            <SelectTrigger>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {years.map((year) => (
-                <SelectItem key={year} value={year.toString()}>
-                  {year}년
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
+    <>
+      <PermissionErrorDialog
+        open={showPermissionDialog}
+        onOpenChange={setShowPermissionDialog}
+        orgLogin={orgLogin}
+        missingPermission={permissionError?.missingPermission}
+      />
 
-        {/* 커밋 동기화 상태 */}
-        {selectedYear && (
-          <div className="space-y-3 rounded-lg border p-4">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <GitBranch className="h-4 w-4" />
-                <span className="font-medium">커밋 동기화</span>
+      <Card>
+        <CardHeader>
+          <CardTitle>분석 설정</CardTitle>
+          <CardDescription>
+            연도와 대상 사용자를 선택합니다.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-6">
+          {/* 연도 선택 */}
+          <div className="space-y-2">
+            <Label className="flex items-center gap-2">
+              <Calendar className="h-4 w-4" />
+              연도
+            </Label>
+            <Select value={selectedYear} onValueChange={setSelectedYear}>
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {years.map((year) => (
+                  <SelectItem key={year} value={year.toString()}>
+                    {year}년
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          {/* 커밋 동기화 상태 */}
+          {selectedYear && (
+            <div className="space-y-3 rounded-lg border p-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <GitBranch className="h-4 w-4" />
+                  <span className="font-medium">커밋 동기화</span>
+                </div>
+                {isLoadingSync ? (
+                  <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                ) : syncStatus === "COMPLETED" ? (
+                  <Badge variant="default" className="bg-green-600">
+                    <CheckCircle2 className="mr-1 h-3 w-3" />
+                    완료
+                  </Badge>
+                ) : syncStatus === "IN_PROGRESS" ? (
+                  <Badge variant="secondary">
+                    <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                    진행 중
+                  </Badge>
+                ) : syncStatus === "FAILED" ? (
+                  <Badge variant="destructive">
+                    <XCircle className="mr-1 h-3 w-3" />
+                    실패
+                  </Badge>
+                ) : (
+                  <Badge variant="outline">미완료</Badge>
+                )}
               </div>
-              {isLoadingSync ? (
-                <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
-              ) : syncStatus === "COMPLETED" ? (
-                <Badge variant="default" className="bg-green-600">
-                  <CheckCircle2 className="mr-1 h-3 w-3" />
-                  완료
-                </Badge>
-              ) : syncStatus === "IN_PROGRESS" ? (
-                <Badge variant="secondary">
-                  <Loader2 className="mr-1 h-3 w-3 animate-spin" />
-                  진행 중
-                </Badge>
-              ) : syncStatus === "FAILED" ? (
-                <Badge variant="destructive">
-                  <XCircle className="mr-1 h-3 w-3" />
-                  실패
-                </Badge>
-              ) : (
-                <Badge variant="outline">미완료</Badge>
+
+              <p className="text-sm text-muted-foreground">
+                {syncStatus === "COMPLETED"
+                  ? `${selectedYear}년 커밋이 동기화되었습니다. 분석을 시작할 수 있습니다.`
+                  : syncStatus === "IN_PROGRESS"
+                    ? "커밋 동기화가 진행 중입니다. 완료될 때까지 기다려주세요."
+                    : syncStatus === "FAILED"
+                      ? "동기화에 실패했습니다. 다시 시도해주세요."
+                      : `${selectedYear}년 커밋을 먼저 동기화해야 분석을 시작할 수 있습니다.`}
+              </p>
+
+              {syncStatus !== "COMPLETED" && syncStatus !== "IN_PROGRESS" && (
+                <Button
+                  onClick={handleStartSync}
+                  disabled={isSyncing}
+                  variant="outline"
+                  className="w-full"
+                >
+                  {isSyncing ? (
+                    <>
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      동기화 시작 중...
+                    </>
+                  ) : (
+                    <>
+                      <RefreshCcw className="mr-2 h-4 w-4" />
+                      커밋 동기화 시작
+                    </>
+                  )}
+                </Button>
+              )}
+
+              {syncStatus === "IN_PROGRESS" && syncJobId && (
+                <Link href={`/organizations/${orgLogin}/sync/${syncJobId}`}>
+                  <Button variant="ghost" size="sm" className="w-full">
+                    진행 상황 보기 →
+                  </Button>
+                </Link>
+              )}
+            </div>
+          )}
+
+          <Separator />
+
+          {/* 사용자 선택 */}
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <Label className="flex items-center gap-2">
+                <Users className="h-4 w-4" />
+                분석 대상 사용자
+              </Label>
+              {members.length > 0 && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={handleSelectAll}
+                >
+                  {allSelected ? "전체 해제" : "전체 선택"}
+                </Button>
               )}
             </div>
 
-            <p className="text-sm text-muted-foreground">
-              {syncStatus === "COMPLETED"
-                ? `${selectedYear}년 커밋이 동기화되었습니다. 분석을 시작할 수 있습니다.`
-                : syncStatus === "IN_PROGRESS"
-                  ? "커밋 동기화가 진행 중입니다. 완료될 때까지 기다려주세요."
-                  : syncStatus === "FAILED"
-                    ? "동기화에 실패했습니다. 다시 시도해주세요."
-                    : `${selectedYear}년 커밋을 먼저 동기화해야 분석을 시작할 수 있습니다.`}
-            </p>
-
-            {syncStatus !== "COMPLETED" && syncStatus !== "IN_PROGRESS" && (
-              <Button
-                onClick={handleStartSync}
-                disabled={isSyncing}
-                variant="outline"
-                className="w-full"
-              >
-                {isSyncing ? (
-                  <>
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    동기화 시작 중...
-                  </>
-                ) : (
-                  <>
-                    <RefreshCcw className="mr-2 h-4 w-4" />
-                    커밋 동기화 시작
-                  </>
-                )}
-              </Button>
-            )}
-
-            {syncStatus === "IN_PROGRESS" && syncJobId && (
-              <Link href={`/organizations/${orgLogin}/sync/${syncJobId}`}>
-                <Button variant="ghost" size="sm" className="w-full">
-                  진행 상황 보기 →
-                </Button>
-              </Link>
-            )}
-          </div>
-        )}
-
-        <Separator />
-
-        {/* 사용자 선택 */}
-        <div className="space-y-3">
-          <div className="flex items-center justify-between">
-            <Label className="flex items-center gap-2">
-              <Users className="h-4 w-4" />
-              분석 대상 사용자
-            </Label>
-            {members.length > 0 && (
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                onClick={handleSelectAll}
-              >
-                {allSelected ? "전체 해제" : "전체 선택"}
-              </Button>
-            )}
-          </div>
-
-          {isLoadingMembers && (
-            <div className="flex items-center justify-center py-8">
-              <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-            </div>
-          )}
-
-          {membersError && (
-            <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-4">
-              <p className="text-sm text-destructive">{membersError}</p>
-            </div>
-          )}
-
-          {members.length > 0 && (
-            <>
-              <div className="grid grid-cols-2 gap-3">
-                {members.map((member) => (
-                  <div
-                    key={member.login}
-                    className="flex items-center space-x-3 rounded-lg border p-3"
-                  >
-                    <Checkbox
-                      id={member.login}
-                      checked={selectedUsers.includes(member.login)}
-                      onCheckedChange={() => handleUserToggle(member.login)}
-                    />
-                    <Avatar className="h-8 w-8">
-                      <AvatarImage src={member.avatarUrl} />
-                      <AvatarFallback>
-                        {member.login.charAt(0).toUpperCase()}
-                      </AvatarFallback>
-                    </Avatar>
-                    <label
-                      htmlFor={member.login}
-                      className="flex-1 cursor-pointer text-sm"
-                    >
-                      <span className="font-medium">
-                        {member.name || member.login}
-                      </span>
-                      <span className="ml-1 text-muted-foreground">
-                        @{member.login}
-                      </span>
-                    </label>
-                  </div>
-                ))}
+            {isLoadingMembers && (
+              <div className="flex items-center justify-center py-8">
+                <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
               </div>
-              <p className="text-xs text-muted-foreground">
-                {selectedUsers.length}명 선택됨
-              </p>
-            </>
-          )}
-        </div>
+            )}
 
-        <Separator />
+            {membersError && (
+              <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-4">
+                <p className="text-sm text-destructive">{membersError}</p>
+              </div>
+            )}
 
-        {/* 고급 옵션 */}
-        <Collapsible open={isAdvancedOpen} onOpenChange={setIsAdvancedOpen}>
-          <CollapsibleTrigger asChild>
-            <Button variant="ghost" className="w-full justify-between">
-              고급 옵션
-              <ChevronDown
-                className={`h-4 w-4 transition-transform ${isAdvancedOpen ? "rotate-180" : ""
-                  }`}
-              />
-            </Button>
-          </CollapsibleTrigger>
-          <CollapsibleContent className="space-y-4 pt-4">
-            <div className="space-y-2">
-              <Label>LLM 모델</Label>
-              <Select
-                value={llmModel}
-                onValueChange={(v) => setLlmModel(v as typeof llmModel)}
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="gpt-4o">GPT-4o (OpenAI)</SelectItem>
-                  <SelectItem value="claude-3-5-sonnet">
-                    Claude 3.5 Sonnet (Anthropic)
-                  </SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
+            {members.length > 0 && (
+              <>
+                <div className="grid grid-cols-2 gap-3">
+                  {members.map((member) => (
+                    <div
+                      key={member.login}
+                      className="flex items-center space-x-3 rounded-lg border p-3"
+                    >
+                      <Checkbox
+                        id={member.login}
+                        checked={selectedUsers.includes(member.login)}
+                        onCheckedChange={() => handleUserToggle(member.login)}
+                      />
+                      <Avatar className="h-8 w-8">
+                        <AvatarImage src={member.avatarUrl} />
+                        <AvatarFallback>
+                          {member.login.charAt(0).toUpperCase()}
+                        </AvatarFallback>
+                      </Avatar>
+                      <label
+                        htmlFor={member.login}
+                        className="flex-1 cursor-pointer text-sm"
+                      >
+                        <span className="font-medium">
+                          {member.name || member.login}
+                        </span>
+                        <span className="ml-1 text-muted-foreground">
+                          @{member.login}
+                        </span>
+                      </label>
+                    </div>
+                  ))}
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  {selectedUsers.length}명 선택됨
+                </p>
+              </>
+            )}
+          </div>
 
-            <div className="flex items-center space-x-2">
-              <Checkbox
-                id="includeArchived"
-                checked={includeArchived}
-                onCheckedChange={(checked) =>
-                  setIncludeArchived(checked as boolean)
-                }
-              />
-              <label htmlFor="includeArchived" className="text-sm">
-                아카이브된 저장소 포함
-              </label>
-            </div>
-          </CollapsibleContent>
-        </Collapsible>
+          <Separator />
 
-        <Separator />
+          {/* 고급 옵션 */}
+          <Collapsible open={isAdvancedOpen} onOpenChange={setIsAdvancedOpen}>
+            <CollapsibleTrigger asChild>
+              <Button variant="ghost" className="w-full justify-between">
+                고급 옵션
+                <ChevronDown
+                  className={`h-4 w-4 transition-transform ${isAdvancedOpen ? "rotate-180" : ""
+                    }`}
+                />
+              </Button>
+            </CollapsibleTrigger>
+            <CollapsibleContent className="space-y-4 pt-4">
+              <div className="space-y-2">
+                <Label>LLM 모델</Label>
+                <Select
+                  value={llmModel}
+                  onValueChange={(v) => setLlmModel(v as typeof llmModel)}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="gpt-4o">GPT-4o (OpenAI)</SelectItem>
+                    <SelectItem value="claude-3-5-sonnet">
+                      Claude 3.5 Sonnet (Anthropic)
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
 
-        {/* 실행 버튼 */}
-        <Button
-          className="w-full"
-          size="lg"
-          onClick={handleSubmit}
-          disabled={isLoading || selectedUsers.length === 0 || syncStatus !== "COMPLETED"}
-        >
-          {isLoading ? (
-            <>
-              <Loader2 className="mr-2 h-5 w-5 animate-spin" />
-              분석 시작 중...
-            </>
-          ) : (
-            <>
-              <Play className="mr-2 h-5 w-5" />
-              분석 시작
-            </>
-          )}
-        </Button>
-      </CardContent>
-    </Card>
+              <div className="flex items-center space-x-2">
+                <Checkbox
+                  id="includeArchived"
+                  checked={includeArchived}
+                  onCheckedChange={(checked) =>
+                    setIncludeArchived(checked as boolean)
+                  }
+                />
+                <label htmlFor="includeArchived" className="text-sm">
+                  아카이브된 저장소 포함
+                </label>
+              </div>
+            </CollapsibleContent>
+          </Collapsible>
+
+          <Separator />
+
+          {/* 실행 버튼 */}
+          <Button
+            className="w-full"
+            size="lg"
+            onClick={handleSubmit}
+            disabled={isLoading || selectedUsers.length === 0 || syncStatus !== "COMPLETED"}
+          >
+            {isLoading ? (
+              <>
+                <Loader2 className="mr-2 h-5 w-5 animate-spin" />
+                분석 시작 중...
+              </>
+            ) : (
+              <>
+                <Play className="mr-2 h-5 w-5" />
+                분석 시작
+              </>
+            )}
+          </Button>
+        </CardContent>
+      </Card>
+    </>
   );
 }

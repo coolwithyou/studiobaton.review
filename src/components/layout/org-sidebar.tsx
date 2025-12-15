@@ -20,6 +20,7 @@ import {
   Settings,
   ChevronDown,
   Building2,
+  RefreshCw,
 } from "lucide-react";
 
 interface Organization {
@@ -38,6 +39,7 @@ const navigation = [
   { name: "대시보드", href: "", icon: LayoutDashboard },
   { name: "분석 목록", href: "/analysis", icon: BarChart3 },
   { name: "새 분석", href: "/analysis/new", icon: Plus },
+  { name: "커밋 동기화", href: "/sync", icon: RefreshCw },
   { name: "설정", href: "/settings", icon: Settings },
 ];
 

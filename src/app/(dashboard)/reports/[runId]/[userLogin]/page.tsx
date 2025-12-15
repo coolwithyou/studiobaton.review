@@ -16,6 +16,7 @@ import { ImpactRadarChart } from "@/components/charts/impact-radar-chart";
 import { ManagerNotesEditor } from "@/components/reports/manager-notes-editor";
 import { PdfDownloadButton } from "@/components/reports/pdf-download-button";
 import { AiRetryButton } from "@/components/reports/ai-retry-button";
+import { DeleteReportButton } from "@/components/reports/delete-report-button";
 import {
   ArrowLeft,
   CheckCircle2,
@@ -115,6 +116,12 @@ export default async function UserReportPage({
                 확정됨
               </Badge>
             )}
+            <DeleteReportButton
+              reportId={report.id}
+              isAdmin={isAdmin}
+              orgLogin={report.run.org.login}
+              userName={report.user.name || report.userLogin}
+            />
             <AiRetryButton
               reportId={report.id}
               isFinalized={report.isFinalized}

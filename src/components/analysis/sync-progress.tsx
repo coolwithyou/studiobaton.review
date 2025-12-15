@@ -14,6 +14,7 @@ import {
   GitBranch,
   Clock,
   StopCircle,
+  RefreshCw,
 } from "lucide-react";
 
 interface SyncProgressProps {
@@ -62,8 +63,10 @@ export function SyncProgress({
   const [syncData, setSyncData] = useState<SyncData | null>(null);
   const [isPolling, setIsPolling] = useState(true);
   const [isCancelling, setIsCancelling] = useState(false);
+  const [isRetrying, setIsRetrying] = useState(false);
 
   const isRunning = syncData?.status === "IN_PROGRESS" || syncData?.status === "PENDING";
+  const isFinished = syncData?.status === "COMPLETED" || syncData?.status === "FAILED";
   const percentage = syncData?.progress
     ? Math.round((syncData.progress.completedRepos / syncData.progress.totalRepos) * 100) || 0
     : 0;
@@ -129,6 +132,32 @@ export function SyncProgress({
     }
   };
 
+  const handleRetry = async () => {
+    if (!confirm("동기화를 다시 시작하시겠습니까? 기존 커밋 데이터는 유지됩니다.")) return;
+
+    setIsRetrying(true);
+    try {
+      const res = await fetch("/api/commits/sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ orgLogin, year }),
+      });
+
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error || "Failed to start sync");
+      }
+
+      toast.success("동기화가 다시 시작되었습니다.");
+      setIsPolling(true); // 폴링 재시작
+    } catch (err) {
+      console.error("Error retrying sync:", err);
+      toast.error("동기화 재시작에 실패했습니다.");
+    } finally {
+      setIsRetrying(false);
+    }
+  };
+
   if (!syncData) {
     return (
       <Card>
@@ -180,6 +209,21 @@ export function SyncProgress({
                 <StopCircle className="h-4 w-4" />
               )}
               <span className="ml-1 hidden sm:inline">중단</span>
+            </Button>
+          )}
+          {isFinished && (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={handleRetry}
+              disabled={isRetrying}
+            >
+              {isRetrying ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <RefreshCw className="h-4 w-4" />
+              )}
+              <span className="ml-1 hidden sm:inline">다시 동기화</span>
             </Button>
           )}
         </div>

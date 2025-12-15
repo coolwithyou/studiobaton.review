@@ -113,6 +113,13 @@ export default async function AnalysisDetailPage({
               {run.org.name || run.org.login} • {format(run.createdAt, "yyyy년 MM월 dd일 HH:mm", { locale: ko })} 시작
             </p>
           </div>
+          {run.status === "DONE" && (
+            <Button asChild>
+              <Link href={`/organizations/${login}/analysis/${runId}/journal`}>
+                📅 업무 일지 보기
+              </Link>
+            </Button>
+          )}
         </div>
       </div>
 

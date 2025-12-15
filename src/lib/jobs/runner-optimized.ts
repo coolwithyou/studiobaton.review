@@ -107,6 +107,7 @@ async function updateProgress(
 		failed?: number;
 		currentRepo?: string;
 		repoProgress?: RepoProgress[];
+		progress?: any;
 		error?: string;
 	}
 ) {
@@ -115,7 +116,8 @@ async function updateProgress(
 
 	const currentProgress = (run.progress as ProgressState) || {};
 
-	const newProgress = {
+	// updates.progress가 있으면 그것을 우선 사용 (clusteringProgress 포함)
+	const newProgress = updates.progress ? updates.progress : {
 		phase: updates.phase ?? currentProgress.phase ?? "",
 		total: updates.total ?? currentProgress.total ?? 0,
 		completed: updates.completed ?? currentProgress.completed ?? 0,
@@ -425,7 +427,7 @@ export async function scanCommitsForRepo(
 	};
 }
 
-// 3단계: Work Unit 생성 (사용자별 검증 포함)
+// 3단계: Work Unit 생성 (병렬 처리 및 배치 저장 최적화)
 export async function buildWorkUnits(runId: string): Promise<number> {
 	console.log(`[Job] Building work units for run ${runId}`);
 
@@ -470,9 +472,20 @@ export async function buildWorkUnits(runId: string): Promise<number> {
 
 	const options = run.options as AnalysisOptions;
 	const orgSettings = (run.org.settings as Record<string, unknown>) || {};
-	let totalWorkUnits = 0;
 
-	// userLogin은 이미 위에서 선언됨
+	// 1단계: 커밋 로딩
+	await updateProgress(runId, {
+		progress: JSON.parse(JSON.stringify({
+			clusteringProgress: {
+				stage: "loading",
+				totalCommits: 0,
+				processedCommits: 0,
+				totalRepos: 0,
+				processedRepos: 0,
+				createdWorkUnits: 0,
+			}
+		}))
+	});
 
 	const commits = await db.commit.findMany({
 		where: {
@@ -494,33 +507,69 @@ export async function buildWorkUnits(runId: string): Promise<number> {
 		console.log(
 			`[Job] Skipping Work Unit generation for ${userLogin}: no commits (will create empty report)`
 		);
-	} else {
 
-		const commitsByRepo = new Map<string, typeof commits>();
-		for (const commit of commits) {
-			const repoId = commit.repoId;
-			if (!commitsByRepo.has(repoId)) {
-				commitsByRepo.set(repoId, []);
-			}
-			commitsByRepo.get(repoId)!.push(commit);
+		await updateProgress(runId, {
+			status: "AWAITING_AI_CONFIRMATION",
+			phase: "AWAITING_AI_CONFIRMATION",
+		});
+
+		return 0;
+	}
+
+	// 저장소별로 그룹화
+	const commitsByRepo = new Map<string, typeof commits>();
+	for (const commit of commits) {
+		const repoId = commit.repoId;
+		if (!commitsByRepo.has(repoId)) {
+			commitsByRepo.set(repoId, []);
 		}
+		commitsByRepo.get(repoId)!.push(commit);
+	}
 
-		for (const [repoId, repoCommits] of commitsByRepo) {
+	const totalRepos = commitsByRepo.size;
+	console.log(`[Job] Processing ${commits.length} commits across ${totalRepos} repositories`);
+
+	// 2단계: 병렬 클러스터링
+	await updateProgress(runId, {
+		progress: JSON.parse(JSON.stringify({
+			clusteringProgress: {
+				stage: "clustering",
+				totalCommits: commits.length,
+				processedCommits: commits.length,
+				totalRepos,
+				processedRepos: 0,
+				createdWorkUnits: 0,
+			}
+		}))
+	});
+
+	// 병렬 클러스터링 (5개 저장소 동시 처리)
+	const CONCURRENT_CLUSTERING = 5;
+	const limit = pLimit(CONCURRENT_CLUSTERING);
+	let processedRepos = 0;
+	let totalWorkUnits = 0;
+
+	// 모든 WorkUnit과 WorkUnitCommit을 배열에 모아서 배치 저장
+	const allWorkUnitsToCreate: any[] = [];
+	const allWorkUnitCommitsToCreate: any[] = [];
+
+	const clusterPromises = Array.from(commitsByRepo.entries()).map(([repoId, repoCommits]) =>
+		limit(async () => {
+			// 클러스터링 수행
 			const workUnitDatas = clusterCommits(repoCommits, options?.clusteringConfig);
+
+			const repoWorkUnits: any[] = [];
 
 			for (const workUnitData of workUnitDatas) {
 				const clusterCommitsList = workUnitData.commits;
-
 				if (clusterCommitsList.length === 0) continue;
 
 				const firstCommit = clusterCommitsList[0];
 				const lastCommit = clusterCommitsList[clusterCommitsList.length - 1];
-
 				const totalAdditions = workUnitData.additions;
 				const totalDeletions = workUnitData.deletions;
 				const allPaths = new Set<string>();
 				clusterCommitsList.forEach((c) => c.files.forEach((f) => allPaths.add(f.path)));
-
 				const primaryPaths = workUnitData.primaryPaths;
 
 				const isHotfix = clusterCommitsList.some((c) =>
@@ -545,8 +594,8 @@ export async function buildWorkUnits(runId: string): Promise<number> {
 					}
 				);
 
-				const workUnit = await db.workUnit.create({
-					data: {
+				repoWorkUnits.push({
+					workUnitData: {
 						runId,
 						repoId,
 						userLogin,
@@ -562,23 +611,97 @@ export async function buildWorkUnits(runId: string): Promise<number> {
 						isHotfix,
 						hasRevert,
 					},
+					commits: clusterCommitsList,
 				});
+			}
 
-				// WorkUnitCommit 연결 (Batch)
-				const workUnitCommits = clusterCommitsList.map((commit, index) => ({
-					workUnitId: workUnit.id,
-					commitId: commit.id,
-					order: index,
-				}));
+			processedRepos++;
 
-				await db.workUnitCommit.createMany({
-					data: workUnitCommits,
-					skipDuplicates: true,
+			// 진행률 업데이트 (5개 저장소마다)
+			if (processedRepos % 5 === 0 || processedRepos === totalRepos) {
+				await updateProgress(runId, {
+					progress: JSON.parse(JSON.stringify({
+						clusteringProgress: {
+							stage: "clustering",
+							totalCommits: commits.length,
+							processedCommits: commits.length,
+							totalRepos,
+							processedRepos,
+							createdWorkUnits: totalWorkUnits,
+						}
+					}))
 				});
+			}
 
-				totalWorkUnits++;
+			return repoWorkUnits;
+		})
+	);
+
+	const allRepoResults = await Promise.all(clusterPromises);
+
+	// 3단계: 배치 저장
+	await updateProgress(runId, {
+		progress: JSON.parse(JSON.stringify({
+			clusteringProgress: {
+				stage: "saving",
+				totalCommits: commits.length,
+				processedCommits: commits.length,
+				totalRepos,
+				processedRepos: totalRepos,
+				createdWorkUnits: 0,
+			}
+		}))
+	});
+
+	console.log(`[Job] Saving Work Units to database...`);
+
+	// 배치 크기 설정 (Prisma의 제한을 고려)
+	const BATCH_SIZE = 100;
+
+	// 각 저장소 결과를 순회하며 WorkUnit 생성
+	for (const repoWorkUnits of allRepoResults) {
+		for (const { workUnitData, commits: clusterCommitsList } of repoWorkUnits) {
+			// WorkUnit 생성
+			const workUnit = await db.workUnit.create({
+				data: workUnitData,
+			});
+
+			// WorkUnitCommit 배치 준비
+			const workUnitCommits = clusterCommitsList.map((commit: any, index: number) => ({
+				workUnitId: workUnit.id,
+				commitId: commit.id,
+				order: index,
+			}));
+
+			allWorkUnitCommitsToCreate.push(...workUnitCommits);
+			totalWorkUnits++;
+
+			// 주기적으로 진행률 업데이트
+			if (totalWorkUnits % 50 === 0) {
+				await updateProgress(runId, {
+					progress: JSON.parse(JSON.stringify({
+						clusteringProgress: {
+							stage: "saving",
+							totalCommits: commits.length,
+							processedCommits: commits.length,
+							totalRepos,
+							processedRepos: totalRepos,
+							createdWorkUnits: totalWorkUnits,
+						}
+					}))
+				});
 			}
 		}
+	}
+
+	// WorkUnitCommit을 배치로 저장
+	console.log(`[Job] Saving ${allWorkUnitCommitsToCreate.length} WorkUnitCommit links...`);
+	for (let i = 0; i < allWorkUnitCommitsToCreate.length; i += BATCH_SIZE) {
+		const batch = allWorkUnitCommitsToCreate.slice(i, i + BATCH_SIZE);
+		await db.workUnitCommit.createMany({
+			data: batch,
+			skipDuplicates: true,
+		});
 	}
 
 	console.log(`[Job] Created ${totalWorkUnits} work units for run ${runId}`);
@@ -586,6 +709,16 @@ export async function buildWorkUnits(runId: string): Promise<number> {
 	await updateProgress(runId, {
 		status: "AWAITING_AI_CONFIRMATION",
 		phase: "AWAITING_AI_CONFIRMATION",
+		progress: JSON.parse(JSON.stringify({
+			clusteringProgress: {
+				stage: "saving",
+				totalCommits: commits.length,
+				processedCommits: commits.length,
+				totalRepos,
+				processedRepos: totalRepos,
+				createdWorkUnits: totalWorkUnits,
+			}
+		}))
 	});
 
 	return totalWorkUnits;
