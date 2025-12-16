@@ -2,6 +2,7 @@ import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { getUser } from "@/lib/session";
 import { db } from "@/lib/db";
 import {
@@ -11,6 +12,8 @@ import {
   Users,
   FolderGit2,
   Calendar,
+  GitPullRequest,
+  ArrowRight,
 } from "lucide-react";
 
 async function getDashboardData(orgLogin: string, userId: string) {
@@ -61,6 +64,30 @@ async function getDashboardData(orgLogin: string, userId: string) {
     distinct: ["authorLogin"],
   });
 
+  // PR 통계
+  const totalPRs = await db.pullRequest.count({
+    where: {
+      repo: { orgId: org.id },
+    },
+  });
+
+  const prsByState = await db.pullRequest.groupBy({
+    by: ["state"],
+    where: {
+      repo: { orgId: org.id },
+    },
+    _count: {
+      id: true,
+    },
+  });
+
+  const prStats = {
+    total: totalPRs,
+    open: prsByState.find((p) => p.state === "open")?._count.id || 0,
+    closed: prsByState.find((p) => p.state === "closed")?._count.id || 0,
+    merged: prsByState.find((p) => p.state === "merged")?._count.id || 0,
+  };
+
   // 최근 동기화 작업
   const recentSyncJobs = await db.commitSyncJob.findMany({
     where: {
@@ -87,6 +114,20 @@ async function getDashboardData(orgLogin: string, userId: string) {
     take: 10,
   });
 
+  // 최근 PR 5개
+  const recentPRs = await db.pullRequest.findMany({
+    where: {
+      repo: { orgId: org.id },
+    },
+    include: {
+      repo: {
+        select: { name: true },
+      },
+    },
+    orderBy: { createdAt: "desc" },
+    take: 5,
+  });
+
   return {
     org,
     stats: {
@@ -95,8 +136,10 @@ async function getDashboardData(orgLogin: string, userId: string) {
       totalCommits,
       contributorCount: uniqueContributors.length,
     },
+    prStats,
     recentSyncJobs,
     topContributors,
+    recentPRs,
   };
 }
 
@@ -111,7 +154,7 @@ export default async function OrganizationDashboardPage({
     redirect("/login");
   }
 
-  const { org, stats, recentSyncJobs, topContributors } = await getDashboardData(login, user.id);
+  const { org, stats, prStats, recentSyncJobs, topContributors, recentPRs } = await getDashboardData(login, user.id);
 
   return (
     <div className="container py-8 px-4">
@@ -119,12 +162,12 @@ export default async function OrganizationDashboardPage({
       <div className="mb-8">
         <h1 className="text-3xl font-bold">{org.name || org.login}</h1>
         <p className="mt-2 text-muted-foreground">
-          조직의 커밋 데이터를 수집하고 관리하세요.
+          조직의 커밋 및 PR 데이터를 수집하고 관리하세요.
         </p>
       </div>
 
       {/* Stats Overview */}
-      <div className="mb-8 grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+      <div className="mb-8 grid gap-4 md:grid-cols-2 lg:grid-cols-5">
         <Card>
           <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-sm font-medium">전체 커밋</CardTitle>
@@ -133,6 +176,19 @@ export default async function OrganizationDashboardPage({
           <CardContent>
             <p className="text-2xl font-bold">{stats.totalCommits.toLocaleString()}</p>
             <p className="text-xs text-muted-foreground">수집된 커밋 수</p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
+            <CardTitle className="text-sm font-medium">Pull Requests</CardTitle>
+            <GitPullRequest className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <p className="text-2xl font-bold">{prStats.total.toLocaleString()}</p>
+            <p className="text-xs text-muted-foreground">
+              {prStats.merged} merged, {prStats.open} open
+            </p>
           </CardContent>
         </Card>
 
@@ -171,7 +227,7 @@ export default async function OrganizationDashboardPage({
       </div>
 
       {/* Quick Actions */}
-      <div className="mb-8 grid gap-4 md:grid-cols-2">
+      <div className="mb-8 grid gap-4 md:grid-cols-3">
         <Card className="hover:border-primary/50 transition-colors">
           <Link href={`/organizations/${login}/sync`}>
             <CardHeader className="flex flex-row items-center justify-between pb-2">
@@ -182,6 +238,21 @@ export default async function OrganizationDashboardPage({
               <p className="text-2xl font-bold">시작하기</p>
               <p className="text-xs text-muted-foreground">
                 새로운 커밋 데이터를 수집합니다
+              </p>
+            </CardContent>
+          </Link>
+        </Card>
+
+        <Card className="hover:border-primary/50 transition-colors">
+          <Link href={`/organizations/${login}/pulls`}>
+            <CardHeader className="flex flex-row items-center justify-between pb-2">
+              <CardTitle className="text-sm font-medium">Pull Requests</CardTitle>
+              <GitPullRequest className="h-4 w-4 text-muted-foreground" />
+            </CardHeader>
+            <CardContent>
+              <p className="text-2xl font-bold">{prStats.total}개</p>
+              <p className="text-xs text-muted-foreground">
+                PR 목록 및 통계 확인
               </p>
             </CardContent>
           </Link>
@@ -203,33 +274,86 @@ export default async function OrganizationDashboardPage({
         </Card>
       </div>
 
-      {/* Top Contributors */}
-      {topContributors.length > 0 && (
-        <Card className="mb-8">
-          <CardHeader>
-            <CardTitle>주요 기여자</CardTitle>
-            <CardDescription>커밋 수 기준 상위 기여자</CardDescription>
+      <div className="grid gap-8 lg:grid-cols-2">
+        {/* Top Contributors */}
+        {topContributors.length > 0 && (
+          <Card>
+            <CardHeader>
+              <CardTitle>주요 기여자</CardTitle>
+              <CardDescription>커밋 수 기준 상위 기여자</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-3">
+                {topContributors.slice(0, 5).map((contributor, index) => (
+                  <div key={contributor.authorLogin} className="flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      <span className="text-sm text-muted-foreground w-6">#{index + 1}</span>
+                      <span className="font-medium">{contributor.authorLogin}</span>
+                    </div>
+                    <span className="text-sm text-muted-foreground">
+                      {contributor._count.id.toLocaleString()} 커밋
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Recent PRs */}
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between">
+            <div>
+              <CardTitle>최근 Pull Requests</CardTitle>
+              <CardDescription>최근 생성된 PR 목록</CardDescription>
+            </div>
+            <Button variant="outline" size="sm" asChild>
+              <Link href={`/organizations/${login}/pulls`}>
+                전체 보기
+                <ArrowRight className="ml-2 h-4 w-4" />
+              </Link>
+            </Button>
           </CardHeader>
           <CardContent>
-            <div className="space-y-3">
-              {topContributors.map((contributor, index) => (
-                <div key={contributor.authorLogin} className="flex items-center justify-between">
-                  <div className="flex items-center gap-3">
-                    <span className="text-sm text-muted-foreground w-6">#{index + 1}</span>
-                    <span className="font-medium">{contributor.authorLogin}</span>
+            {recentPRs.length > 0 ? (
+              <div className="space-y-3">
+                {recentPRs.map((pr) => (
+                  <div key={pr.id} className="flex items-center justify-between rounded-lg border p-3">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <GitPullRequest className="h-4 w-4 text-muted-foreground flex-shrink-0" />
+                        <p className="font-medium truncate">{pr.title}</p>
+                      </div>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        {pr.repo.name} #{pr.number} by {pr.authorLogin}
+                      </p>
+                    </div>
+                    <Badge
+                      variant={
+                        pr.state === "merged"
+                          ? "default"
+                          : pr.state === "open"
+                            ? "secondary"
+                            : "outline"
+                      }
+                      className="ml-2 flex-shrink-0"
+                    >
+                      {pr.state}
+                    </Badge>
                   </div>
-                  <span className="text-sm text-muted-foreground">
-                    {contributor._count.id.toLocaleString()} 커밋
-                  </span>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-center text-muted-foreground py-8">
+                수집된 PR이 없습니다.
+              </p>
+            )}
           </CardContent>
         </Card>
-      )}
+      </div>
 
       {/* Recent Sync Jobs */}
-      <Card>
+      <Card className="mt-8">
         <CardHeader>
           <CardTitle>최근 동기화 기록</CardTitle>
           <CardDescription>커밋 동기화 작업 히스토리</CardDescription>

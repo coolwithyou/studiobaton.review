@@ -19,6 +19,7 @@ import {
   ChevronDown,
   Building2,
   RefreshCw,
+  GitPullRequest,
 } from "lucide-react";
 
 interface Organization {
@@ -35,6 +36,7 @@ interface OrgSidebarProps {
 
 const navigation = [
   { name: "대시보드", href: "", icon: LayoutDashboard },
+  { name: "Pull Requests", href: "/pulls", icon: GitPullRequest },
   { name: "커밋 동기화", href: "/sync", icon: RefreshCw },
   { name: "설정", href: "/settings", icon: Settings },
 ];
