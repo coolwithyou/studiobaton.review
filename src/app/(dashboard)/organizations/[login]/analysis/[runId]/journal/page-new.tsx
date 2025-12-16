@@ -14,6 +14,7 @@ import {
 import { JournalSidebar } from "@/components/journal/journal-sidebar";
 import { MonthReportView } from "@/components/journal/views/month-report-view";
 import { WeekReportView } from "@/components/journal/views/week-report-view";
+import { JournalHomeView } from "@/components/journal/views/journal-home-view";
 import { MonthlyAnalysisData, WeeklyAnalysisData, DayCommits } from "@/types";
 import { ArrowLeft, BookOpen, Calendar } from "lucide-react";
 import { generateYearWeeks } from "@/lib/journal/utils";
@@ -47,7 +48,7 @@ export default function JournalPageClient({
   const [loading, setLoading] = useState(true);
 
   // URL에서 선택된 view 파싱
-  const viewType = (searchParams.get("view") as "month" | "week") || "month";
+  const viewType = (searchParams.get("view") as "home" | "month" | "week") || "home";
   const viewId = parseInt(searchParams.get("id") || String(new Date().getMonth() + 1));
 
   const selectedView = { type: viewType, id: viewId };
@@ -116,7 +117,7 @@ export default function JournalPageClient({
     });
   }, [weeklyAnalyses, monthlyAnalyses]);
 
-  const handleSelectView = (view: { type: "month" | "week"; id: number }) => {
+  const handleSelectView = (view: { type: "home" | "month" | "week"; id: number }) => {
     const params = new URLSearchParams(searchParams.toString());
     params.set("view", view.type);
     params.set("id", String(view.id));
@@ -208,6 +209,13 @@ export default function JournalPageClient({
         {/* Main Content */}
         <ResizablePanel defaultSize={78}>
           <div className="h-full overflow-auto">
+            {selectedView.type === "home" && (
+              <JournalHomeView
+                year={year}
+                commits={initialDayCommits}
+              />
+            )}
+
             {selectedView.type === "month" && selectedMonthData && (
               <MonthReportView
                 runId={runId}

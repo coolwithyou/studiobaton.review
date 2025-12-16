@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
-import { ChevronDown, ChevronRight, Calendar, CheckCircle2, Circle, Loader2 } from "lucide-react";
+import { ChevronDown, ChevronRight, Calendar, CheckCircle2, Circle, Loader2, Home } from "lucide-react";
 import { WeeklyAnalysisData, MonthlyAnalysisData } from "@/types";
 import { format } from "date-fns";
 import { ko } from "date-fns/locale";
@@ -15,8 +15,8 @@ interface JournalSidebarProps {
     weeklyAnalyses: WeeklyAnalysisData[];
     monthlyAnalysis?: MonthlyAnalysisData;
   }>;
-  selectedView: { type: "month" | "week"; id: number } | null;
-  onSelectView: (view: { type: "month" | "week"; id: number }) => void;
+  selectedView: { type: "home" | "month" | "week"; id: number } | null;
+  onSelectView: (view: { type: "home" | "month" | "week"; id: number }) => void;
 }
 
 const MONTH_NAMES = [
@@ -96,6 +96,22 @@ export function JournalSidebar({
       {/* Navigation Tree */}
       <ScrollArea className="flex-1">
         <div className="p-2">
+          {/* Home/Overview Node */}
+          <div
+            className={`
+              flex items-center gap-3 px-3 py-2.5 rounded-md cursor-pointer mb-3
+              hover:bg-muted transition-colors
+              ${selectedView?.type === "home" ? "bg-primary/10 font-medium border-l-2 border-primary" : ""}
+            `}
+            onClick={() => onSelectView({ type: "home", id: 0 })}
+          >
+            <Home className="h-5 w-5 text-primary" />
+            <span className="flex-1 text-sm font-medium">홈</span>
+            <Badge variant="secondary" className="text-xs">3D</Badge>
+          </div>
+
+          <div className="border-t my-2" />
+
           {monthsData.map((monthData) => {
             const isExpanded = expandedMonths.has(monthData.month);
             const isMonthSelected =
@@ -183,3 +199,4 @@ export function JournalSidebar({
     </div>
   );
 }
+
