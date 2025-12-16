@@ -15,7 +15,7 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { toast } from "sonner";
-import { Loader2, Mail, Plus, X, Save } from "lucide-react";
+import { Loader2, Mail, Plus, X, Save, RefreshCw } from "lucide-react";
 
 interface Member {
   login: string;
@@ -32,26 +32,50 @@ interface OrganizationMembersListProps {
 
 export function OrganizationMembersList({ orgLogin }: OrganizationMembersListProps) {
   const [isLoading, setIsLoading] = useState(true);
+  const [isSyncing, setIsSyncing] = useState(false);
   const [members, setMembers] = useState<Member[]>([]);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    const fetchMembers = async () => {
-      try {
-        const res = await fetch(`/api/organizations/${orgLogin}/members`);
-        if (!res.ok) {
-          const data = await res.json();
-          throw new Error(data.error || "멤버 조회 실패");
-        }
+  const fetchMembers = async () => {
+    try {
+      setIsLoading(true);
+      const res = await fetch(`/api/organizations/${orgLogin}/members`);
+      if (!res.ok) {
         const data = await res.json();
-        setMembers(data.members);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "멤버 조회 실패");
-      } finally {
-        setIsLoading(false);
+        throw new Error(data.error || "멤버 조회 실패");
       }
-    };
+      const data = await res.json();
+      setMembers(data.members);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "멤버 조회 실패");
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
+  const handleSyncMembers = async () => {
+    setIsSyncing(true);
+    try {
+      const res = await fetch(`/api/organizations/${orgLogin}/sync`, {
+        method: "POST",
+      });
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error || "동기화 실패");
+      }
+      const data = await res.json();
+      toast.success(`멤버 동기화 완료: ${data.organization.memberCount || 0}명`);
+      // 멤버 목록 새로고침
+      await fetchMembers();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "동기화 실패");
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
+  useEffect(() => {
     fetchMembers();
   }, [orgLogin]);
 
@@ -78,10 +102,27 @@ export function OrganizationMembersList({ orgLogin }: OrganizationMembersListPro
   return (
     <Card>
       <CardHeader>
-        <CardTitle>멤버 목록</CardTitle>
-        <CardDescription>
-          조직의 GitHub 멤버 목록입니다. 이메일 alias를 설정하여 커밋 작성자를 정확히 매핑할 수 있습니다.
-        </CardDescription>
+        <div className="flex items-center justify-between">
+          <div>
+            <CardTitle>멤버 목록</CardTitle>
+            <CardDescription>
+              조직의 GitHub 멤버 목록입니다. 이메일 alias를 설정하여 커밋 작성자를 정확히 매핑할 수 있습니다.
+            </CardDescription>
+          </div>
+          <Button 
+            variant="outline" 
+            size="sm" 
+            onClick={handleSyncMembers}
+            disabled={isSyncing}
+          >
+            {isSyncing ? (
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            ) : (
+              <RefreshCw className="mr-2 h-4 w-4" />
+            )}
+            멤버 동기화
+          </Button>
+        </div>
       </CardHeader>
       <CardContent>
         <div className="space-y-3">

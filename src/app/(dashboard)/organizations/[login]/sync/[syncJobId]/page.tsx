@@ -24,7 +24,12 @@ export default async function SyncProgressPage({
       org: {
         include: {
           members: {
-            where: { userId: user.id },
+            where: {
+              OR: [
+                { userId: user.id },
+                { githubLogin: user.login },
+              ],
+            },
           },
         },
       },

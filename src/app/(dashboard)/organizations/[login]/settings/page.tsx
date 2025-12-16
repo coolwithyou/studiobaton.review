@@ -46,7 +46,12 @@ export default async function OrganizationSettingsPage({
     where: { login },
     include: {
       members: {
-        where: { userId: user.id },
+        where: {
+          OR: [
+            { userId: user.id },
+            { githubLogin: user.login },
+          ],
+        },
       },
       repos: {
         orderBy: { name: "asc" },

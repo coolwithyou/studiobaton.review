@@ -15,12 +15,17 @@ export default async function CommitSyncPage({
     redirect("/login");
   }
 
-  // 조직 조회 및 권한 확인
+  // 조직 조회 및 권한 확인 (userId 또는 githubLogin으로)
   const org = await db.organization.findUnique({
     where: { login },
     include: {
       members: {
-        where: { userId: user.id },
+        where: {
+          OR: [
+            { userId: user.id },
+            { githubLogin: user.login },
+          ],
+        },
       },
     },
   });

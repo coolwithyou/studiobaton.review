@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSession } from "@/lib/session";
-import { getGitHubApp } from "@/lib/github";
+import { getGitHubApp, getInstallationOctokit, getOrganizationMembers } from "@/lib/github";
 import { db } from "@/lib/db";
 
 /**
@@ -78,21 +78,54 @@ export async function POST(
       },
     });
 
-    // 현재 사용자를 멤버로 추가 (이미 있으면 무시)
-    await db.organizationMember.upsert({
-      where: {
-        orgId_userId: {
-          orgId: org.id,
-          userId: session.user.id,
-        },
-      },
-      create: {
-        orgId: org.id,
-        userId: session.user.id,
-        role: "ADMIN", // 동기화를 실행한 사람은 관리자로
-      },
-      update: {}, // 이미 있으면 변경 없음
-    });
+    // GitHub 조직 멤버 동기화
+    const octokit = await getInstallationOctokit(installation.id);
+    let memberCount = 0;
+    
+    try {
+      const githubMembers = await getOrganizationMembers(octokit, account.login);
+      
+      for (const member of githubMembers) {
+        // GitHubUser 저장/업데이트
+        await db.gitHubUser.upsert({
+          where: { login: member.login },
+          create: {
+            login: member.login,
+            avatarUrl: member.avatarUrl,
+          },
+          update: {
+            avatarUrl: member.avatarUrl,
+          },
+        });
+
+        // 현재 사용자인지 확인
+        const isCurrentUser = member.login === session.user.login;
+
+        // OrganizationMember 저장/업데이트
+        await db.organizationMember.upsert({
+          where: {
+            orgId_githubLogin: {
+              orgId: org.id,
+              githubLogin: member.login,
+            },
+          },
+          create: {
+            orgId: org.id,
+            githubLogin: member.login,
+            userId: isCurrentUser ? session.user.id : null,
+            role: isCurrentUser ? "ADMIN" : "MEMBER",
+          },
+          update: {
+            userId: isCurrentUser ? session.user.id : undefined, // 기존 userId 유지
+          },
+        });
+        
+        memberCount++;
+      }
+    } catch (memberError) {
+      console.error("Error syncing members:", memberError);
+      // 멤버 동기화 실패해도 계속 진행
+    }
 
     // 저장소 목록 수집
     try {
@@ -135,6 +168,7 @@ export async function POST(
           login: org.login,
           name: org.name,
           repoCount: repos.length,
+          memberCount,
         },
       });
     } catch (repoError) {
@@ -145,6 +179,7 @@ export async function POST(
         organization: {
           login: org.login,
           name: org.name,
+          memberCount,
         },
         warning: "저장소 목록을 가져오는데 실패했습니다.",
       });

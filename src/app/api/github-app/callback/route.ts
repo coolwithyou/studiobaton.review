@@ -95,9 +95,9 @@ export async function GET(request: NextRequest) {
     // 현재 사용자가 이 조직의 멤버인지 확인하고, 없으면 추가
     const existingMembership = await db.organizationMember.findUnique({
       where: {
-        orgId_userId: {
+        orgId_githubLogin: {
           orgId: org.id,
-          userId: session.user.id,
+          githubLogin: session.user.login,
         },
       },
     });
@@ -107,8 +107,18 @@ export async function GET(request: NextRequest) {
       await db.organizationMember.create({
         data: {
           orgId: org.id,
+          githubLogin: session.user.login,
           userId: session.user.id,
           role: "ADMIN",
+        },
+      });
+    } else if (!existingMembership.userId) {
+      // 기존 멤버에 userId 연결
+      await db.organizationMember.update({
+        where: { id: existingMembership.id },
+        data: {
+          userId: session.user.id,
+          role: "ADMIN", // 설치자는 ADMIN
         },
       });
     }

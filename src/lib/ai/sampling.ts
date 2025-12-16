@@ -25,6 +25,19 @@ const DEFAULT_CONFIG: SamplingConfig = {
   includeRandom: 3,
 };
 
+// 리포별 샘플링 설정
+export interface PerRepoSamplingConfig {
+  samplesPerRepo: number;      // 리포당 샘플 수 (기본 3)
+  maxTotalSamples: number;     // 사용자당 최대 총 샘플 (기본 15)
+  minImpactScore: number;      // 최소 임팩트 점수 (기본 0)
+}
+
+const DEFAULT_PER_REPO_CONFIG: PerRepoSamplingConfig = {
+  samplesPerRepo: 3,
+  maxTotalSamples: 15,
+  minImpactScore: 0,
+};
+
 // ============================================
 // 시스템 프롬프트
 // ============================================
@@ -264,6 +277,310 @@ export async function saveSamplingResult(
       result: result as any,
     },
   });
+}
+
+// ============================================
+// 사용자별 + 리포별 독립 샘플링
+// ============================================
+
+/**
+ * 한 사용자의 WorkUnit을 리포별로 독립 샘플링합니다.
+ * 
+ * @param workUnits 한 사용자의 전체 WorkUnit 목록
+ * @param config 샘플링 설정
+ * @returns 선택된 WorkUnit ID와 선정 이유
+ */
+export async function selectSamplesPerUserPerRepo(
+  workUnits: WorkUnitData[],
+  config: Partial<PerRepoSamplingConfig> = {}
+): Promise<Stage0Result> {
+  const finalConfig = { ...DEFAULT_PER_REPO_CONFIG, ...config };
+
+  if (workUnits.length === 0) {
+    return {
+      selectedWorkUnitIds: [],
+      selectionReasons: [],
+    };
+  }
+
+  // 리포별로 그룹화
+  const byRepo = new Map<string, WorkUnitData[]>();
+  workUnits.forEach(wu => {
+    const key = wu.repoId;
+    if (!byRepo.has(key)) {
+      byRepo.set(key, []);
+    }
+    byRepo.get(key)!.push(wu);
+  });
+
+  console.log(`[Sampling] User has WorkUnits in ${byRepo.size} repositories`);
+
+  const allSelectedIds: string[] = [];
+  const allReasons: Stage0Result['selectionReasons'] = [];
+
+  // 각 리포별로 샘플링
+  for (const [repoId, repoWorkUnits] of byRepo) {
+    const repoFullName = repoWorkUnits[0]?.repoFullName || repoId;
+    console.log(`[Sampling] Processing repo: ${repoFullName} (${repoWorkUnits.length} WorkUnits)`);
+
+    // 최소 임팩트 점수 필터링
+    const filtered = repoWorkUnits.filter(wu => wu.impactScore >= finalConfig.minImpactScore);
+
+    if (filtered.length === 0) {
+      console.log(`[Sampling] No WorkUnits above min impact score for ${repoFullName}`);
+      continue;
+    }
+
+    // 리포당 샘플 수 결정 (해당 리포의 WorkUnit이 적으면 전체 선택)
+    const targetCount = Math.min(finalConfig.samplesPerRepo, filtered.length);
+
+    // 리포별 샘플링 실행
+    const repoResult = await selectSamplesForRepo(filtered, targetCount, repoFullName);
+
+    allSelectedIds.push(...repoResult.selectedWorkUnitIds);
+    allReasons.push(...repoResult.selectionReasons);
+
+    // 최대 총 샘플 수 체크
+    if (allSelectedIds.length >= finalConfig.maxTotalSamples) {
+      console.log(`[Sampling] Reached max total samples (${finalConfig.maxTotalSamples})`);
+      break;
+    }
+  }
+
+  // 최대 샘플 수로 제한
+  const finalIds = allSelectedIds.slice(0, finalConfig.maxTotalSamples);
+  const finalReasons = allReasons.filter(r => finalIds.includes(r.workUnitId));
+
+  console.log(`[Sampling] Total selected: ${finalIds.length} WorkUnits from ${byRepo.size} repos`);
+
+  return {
+    selectedWorkUnitIds: finalIds,
+    selectionReasons: finalReasons,
+  };
+}
+
+/**
+ * 단일 리포 내에서 WorkUnit 샘플링
+ */
+async function selectSamplesForRepo(
+  workUnits: WorkUnitData[],
+  targetCount: number,
+  repoFullName: string
+): Promise<Stage0Result> {
+  // WorkUnit이 적으면 전체 선택
+  if (workUnits.length <= targetCount) {
+    return {
+      selectedWorkUnitIds: workUnits.map(wu => wu.id),
+      selectionReasons: workUnits.map(wu => ({
+        workUnitId: wu.id,
+        reason: `${repoFullName}의 전체 작업 (${workUnits.length}개)`,
+        category: mapWorkTypeToCategory(wu.workType),
+      })),
+    };
+  }
+
+  // AI 샘플링 시도
+  try {
+    const result = await selectSamplesForRepoWithAI(workUnits, targetCount, repoFullName);
+    return result;
+  } catch (error) {
+    console.error(`[Sampling] AI sampling failed for ${repoFullName}, using heuristic:`, error);
+    return selectSamplesForRepoWithHeuristic(workUnits, targetCount, repoFullName);
+  }
+}
+
+/**
+ * AI 기반 리포 내 샘플링
+ */
+async function selectSamplesForRepoWithAI(
+  workUnits: WorkUnitData[],
+  targetCount: number,
+  repoFullName: string
+): Promise<Stage0Result> {
+  const REPO_SAMPLING_PROMPT = `당신은 개발 팀 리더로서 팀원의 연간 업무를 평가하고 있습니다.
+
+# 역할
+단일 저장소(${repoFullName}) 내의 작업 단위(WorkUnit) 목록에서 개발자 평가에 가장 의미 있는 샘플을 선정해주세요.
+
+# 선정 기준
+1. **핵심 비즈니스 로직**: 서비스의 핵심 기능을 구현/수정한 작업
+2. **복잡도 높은 작업**: 기술적으로 도전적인 작업
+3. **버그 수정**: 중요한 버그를 해결한 작업
+4. **코드 품질**: 리팩토링, 테스트 추가 등
+
+# 다양성 확보
+- 다양한 작업 유형(feature, bugfix, refactor 등)을 포함
+- 다양한 시기의 작업을 포함
+
+# 출력 형식
+반드시 JSON 형식으로만 응답:
+\`\`\`json
+{
+  "selectedWorkUnitIds": ["id1", "id2", ...],
+  "selectionReasons": [
+    {
+      "workUnitId": "id1",
+      "reason": "선정 이유",
+      "category": "business_logic" | "architecture" | "bug_fix" | "feature" | "quality"
+    }
+  ]
+}
+\`\`\``;
+
+  const workUnitSummaries = workUnits.map(wu => ({
+    id: wu.id,
+    workType: wu.workType,
+    impactScore: wu.impactScore,
+    startDate: wu.startDate.toISOString().split('T')[0],
+    totalCommits: wu.commits.length,
+    totalAdditions: wu.totalAdditions,
+    totalDeletions: wu.totalDeletions,
+    primaryPaths: wu.primaryPaths.slice(0, 3),
+    commitMessages: wu.commits.slice(0, 2).map(c => c.message.split('\n')[0].substring(0, 60)),
+  }));
+
+  const userPrompt = `
+# 저장소: ${repoFullName}
+# 작업 단위 목록 (총 ${workUnits.length}개)
+
+${JSON.stringify(workUnitSummaries, null, 2)}
+
+# 요청
+위 작업 단위 중에서 개발자 평가에 가장 의미 있는 ${targetCount}개를 선정해주세요.
+`;
+
+  const response = await callClaudeWithRetry<Stage0Result>({
+    systemPrompt: REPO_SAMPLING_PROMPT,
+    userPrompt,
+    maxTokens: 1024,
+  });
+
+  // 유효성 검증
+  const validIds = new Set(workUnits.map(wu => wu.id));
+  const filteredIds = response.data.selectedWorkUnitIds.filter(id => validIds.has(id));
+
+  // 부족하면 상위 점수로 보충
+  if (filteredIds.length < targetCount) {
+    const sortedByScore = [...workUnits]
+      .sort((a, b) => b.impactScore - a.impactScore)
+      .filter(wu => !filteredIds.includes(wu.id));
+
+    const needed = targetCount - filteredIds.length;
+    filteredIds.push(...sortedByScore.slice(0, needed).map(wu => wu.id));
+  }
+
+  return {
+    selectedWorkUnitIds: filteredIds.slice(0, targetCount),
+    selectionReasons: response.data.selectionReasons?.filter(
+      sr => filteredIds.includes(sr.workUnitId)
+    ) || [],
+  };
+}
+
+/**
+ * 휴리스틱 기반 리포 내 샘플링 (AI 실패 시 폴백)
+ */
+function selectSamplesForRepoWithHeuristic(
+  workUnits: WorkUnitData[],
+  targetCount: number,
+  repoFullName: string
+): Stage0Result {
+  const selected: WorkUnitData[] = [];
+  const reasons: Stage0Result['selectionReasons'] = [];
+
+  // 점수순 정렬
+  const sortedByScore = [...workUnits].sort((a, b) => b.impactScore - a.impactScore);
+
+  // 1. 상위 점수 (절반)
+  const topCount = Math.ceil(targetCount / 2);
+  sortedByScore.slice(0, topCount).forEach(wu => {
+    selected.push(wu);
+    reasons.push({
+      workUnitId: wu.id,
+      reason: `${repoFullName} 상위 임팩트 (${wu.impactScore.toFixed(1)})`,
+      category: mapWorkTypeToCategory(wu.workType),
+    });
+  });
+
+  // 2. 작업 유형별 다양성
+  const byType = new Map<string, WorkUnitData[]>();
+  workUnits.forEach(wu => {
+    if (!byType.has(wu.workType)) {
+      byType.set(wu.workType, []);
+    }
+    byType.get(wu.workType)!.push(wu);
+  });
+
+  byType.forEach((typeUnits, type) => {
+    if (selected.length >= targetCount) return;
+
+    const notSelected = typeUnits.filter(wu => !selected.includes(wu));
+    if (notSelected.length > 0) {
+      const top = notSelected.sort((a, b) => b.impactScore - a.impactScore)[0];
+      selected.push(top);
+      reasons.push({
+        workUnitId: top.id,
+        reason: `${repoFullName} ${type} 대표 작업`,
+        category: mapWorkTypeToCategory(type),
+      });
+    }
+  });
+
+  // 3. 부족하면 나머지에서 추가
+  if (selected.length < targetCount) {
+    const remaining = workUnits.filter(wu => !selected.includes(wu));
+    remaining
+      .sort((a, b) => b.impactScore - a.impactScore)
+      .slice(0, targetCount - selected.length)
+      .forEach(wu => {
+        selected.push(wu);
+        reasons.push({
+          workUnitId: wu.id,
+          reason: `${repoFullName} 추가 샘플`,
+          category: mapWorkTypeToCategory(wu.workType),
+        });
+      });
+  }
+
+  return {
+    selectedWorkUnitIds: selected.slice(0, targetCount).map(wu => wu.id),
+    selectionReasons: reasons.slice(0, targetCount),
+  };
+}
+
+/**
+ * 사용자별 샘플링 결과 저장
+ */
+export async function saveSamplingResultForUser(
+  analysisRunId: string,
+  userLogin: string,
+  result: Stage0Result
+): Promise<void> {
+  // 선택된 WorkUnit에 isSampled 플래그 설정
+  await db.workUnit.updateMany({
+    where: {
+      analysisRunId,
+      userLogin,
+      id: { in: result.selectedWorkUnitIds },
+    },
+    data: {
+      isSampled: true,
+    },
+  });
+
+  // AiReview로 샘플링 결과 저장 (사용자별)
+  await db.aiReview.create({
+    data: {
+      stage: 0,
+      promptVersion: PROMPT_VERSION,
+      result: {
+        userLogin,
+        ...result,
+      } as any,
+    },
+  });
+
+  console.log(`[Sampling] Saved ${result.selectedWorkUnitIds.length} samples for ${userLogin}`);
 }
 
 // ============================================

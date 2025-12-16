@@ -32,17 +32,20 @@ model Organization {
 }
 
 model OrganizationMember {
-  id        String   @id @default(cuid())
-  orgId     String
-  userId    String
-  role      OrgRole  @default(MEMBER)
-  createdAt DateTime @default(now())
+  id          String   @id @default(cuid())
+  orgId       String
+  githubLogin String // GitHub 로그인 (필수 - 조직 멤버 식별)
+  userId      String? // User와 연결 (로그인한 경우에만)
+  role        OrgRole  @default(MEMBER)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
   org  Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  user User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user User?        @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  @@unique([orgId, userId])
+  @@unique([orgId, githubLogin]) // GitHub 로그인으로 유일성 보장
   @@index([userId])
+  @@index([githubLogin])
 }
 
 enum OrgRole {
@@ -235,6 +238,7 @@ model AnalysisRun {
   id          String         @id @default(cuid())
   orgId       String
   year        Int
+  userLogin   String // 분석 대상 기여자 (단일)
   status      AnalysisStatus @default(PENDING)
   phase       String? // METRICS, CLUSTERING, SAMPLING, ANALYZING, DONE
   progress    Json? // { currentStep, totalSteps, message }
@@ -248,9 +252,10 @@ model AnalysisRun {
   workUnits WorkUnit[]
   reports   YearlyReport[]
 
-  @@unique([orgId, year])
+  @@unique([orgId, year, userLogin]) // 기여자별 독립 분석
   @@index([status])
   @@index([orgId])
+  @@index([userLogin])
 }
 
 enum AnalysisStatus {

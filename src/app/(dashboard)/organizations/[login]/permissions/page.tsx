@@ -32,7 +32,12 @@ export default async function OrganizationPermissionsPage({
     where: { login },
     include: {
       members: {
-        where: { userId: user.id },
+        where: {
+          OR: [
+            { userId: user.id },
+            { githubLogin: user.login },
+          ],
+        },
       },
     },
   });

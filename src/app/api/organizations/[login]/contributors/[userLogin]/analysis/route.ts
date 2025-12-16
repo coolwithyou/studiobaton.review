@@ -1,49 +1,40 @@
 /**
- * 분석 시작 API
- * POST /api/analysis/start
+ * 기여자 연도별 분석 목록 API
+ * GET /api/organizations/[login]/contributors/[userLogin]/analysis
+ * POST /api/organizations/[login]/contributors/[userLogin]/analysis (분석 시작)
  * 
- * 단일 기여자에 대한 연간 분석을 시작합니다.
+ * 해당 기여자의 연도별 분석 상태 목록을 반환하고, 분석을 시작합니다.
  */
 
 import { NextRequest, NextResponse } from "next/server";
 import { getSession } from "@/lib/session";
 import { db } from "@/lib/db";
 
-interface StartAnalysisRequest {
-  orgLogin: string;
+interface YearAnalysis {
   year: number;
-  userLogin: string; // 분석 대상 기여자 (단일)
+  syncStatus: string;
+  analysisId: string | null;
+  analysisStatus: string | null;
+  phase: string | null;
+  startedAt: string | null;
+  finishedAt: string | null;
+  hasReport: boolean;
 }
 
-export async function POST(request: NextRequest) {
+// GET: 연도별 분석 상태 조회
+export async function GET(
+  request: NextRequest,
+  { params }: { params: Promise<{ login: string; userLogin: string }> }
+) {
   try {
-    // 1. 인증 확인
     const session = await getSession();
     if (!session.isLoggedIn || !session.user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    // 2. 요청 파싱
-    const body: StartAnalysisRequest = await request.json();
-    const { orgLogin, year, userLogin } = body;
+    const { login: orgLogin, userLogin } = await params;
 
-    // 3. 유효성 검사
-    if (!orgLogin || !year || !userLogin) {
-      return NextResponse.json(
-        { error: "Missing required fields: orgLogin, year, userLogin" },
-        { status: 400 }
-      );
-    }
-
-    const currentYear = new Date().getFullYear();
-    if (year < 2000 || year > currentYear) {
-      return NextResponse.json(
-        { error: `Invalid year. Must be between 2000 and ${currentYear}` },
-        { status: 400 }
-      );
-    }
-
-    // 4. 조직 조회
+    // 조직 조회
     const org = await db.organization.findUnique({
       where: { login: orgLogin },
     });
@@ -55,7 +46,94 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // 5. 커밋 동기화 상태 확인
+    // 수집 완료된 연도 목록
+    const syncJobs = await db.commitSyncJob.findMany({
+      where: {
+        orgId: org.id,
+        status: "COMPLETED",
+      },
+      orderBy: { year: "desc" },
+    });
+
+    // 해당 사용자의 분석 목록
+    const analysisRuns = await db.analysisRun.findMany({
+      where: {
+        orgId: org.id,
+        userLogin,
+      },
+      include: {
+        reports: {
+          where: { userLogin },
+          select: { id: true },
+        },
+      },
+    });
+    const analysisMap = new Map(analysisRuns.map((r) => [r.year, r]));
+
+    // 연도별 분석 상태 구성
+    const yearAnalyses: YearAnalysis[] = syncJobs.map((job) => {
+      const analysis = analysisMap.get(job.year);
+      return {
+        year: job.year,
+        syncStatus: job.status,
+        analysisId: analysis?.id || null,
+        analysisStatus: analysis?.status || null,
+        phase: analysis?.phase || null,
+        startedAt: analysis?.startedAt?.toISOString() || null,
+        finishedAt: analysis?.finishedAt?.toISOString() || null,
+        hasReport: (analysis?.reports?.length || 0) > 0,
+      };
+    });
+
+    return NextResponse.json({
+      orgLogin,
+      userLogin,
+      analyses: yearAnalyses,
+    });
+  } catch (error) {
+    console.error("Analysis list error:", error);
+    return NextResponse.json(
+      { error: "Internal server error" },
+      { status: 500 }
+    );
+  }
+}
+
+// POST: 분석 시작
+export async function POST(
+  request: NextRequest,
+  { params }: { params: Promise<{ login: string; userLogin: string }> }
+) {
+  try {
+    const session = await getSession();
+    if (!session.isLoggedIn || !session.user) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    const { login: orgLogin, userLogin } = await params;
+    const body = await request.json();
+    const { year } = body;
+
+    if (!year) {
+      return NextResponse.json(
+        { error: "Missing required field: year" },
+        { status: 400 }
+      );
+    }
+
+    // 조직 조회
+    const org = await db.organization.findUnique({
+      where: { login: orgLogin },
+    });
+
+    if (!org) {
+      return NextResponse.json(
+        { error: "Organization not found" },
+        { status: 404 }
+      );
+    }
+
+    // 커밋 동기화 완료 여부 확인
     const syncJob = await db.commitSyncJob.findUnique({
       where: {
         orgId_year: {
@@ -67,15 +145,12 @@ export async function POST(request: NextRequest) {
 
     if (!syncJob || syncJob.status !== "COMPLETED") {
       return NextResponse.json(
-        { 
-          error: "Commit sync not completed. Please sync commits first.",
-          syncStatus: syncJob?.status || "NOT_STARTED",
-        },
+        { error: "Commit sync not completed for this year" },
         { status: 400 }
       );
     }
 
-    // 6. 대상자가 해당 연도에 커밋이 있는지 검증
+    // 해당 사용자가 해당 연도에 커밋이 있는지 확인
     const startDate = new Date(`${year}-01-01T00:00:00Z`);
     const endDate = new Date(`${year}-12-31T23:59:59Z`);
 
@@ -94,7 +169,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // 7. 기존 분석 확인
+    // 기존 분석 확인
     const existingRun = await db.analysisRun.findUnique({
       where: {
         orgId_year_userLogin: {
@@ -117,7 +192,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // 8. 분석 Run 생성/업데이트
+    // 분석 Run 생성/업데이트
     let analysisRun;
     if (existingRun) {
       analysisRun = await db.analysisRun.update({
@@ -151,15 +226,15 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    // 9. 백그라운드 분석 시작
-    runAnalysis(analysisRun.id, org.id, year, userLogin).catch(console.error);
+    // 백그라운드 분석 시작
+    runUserAnalysis(analysisRun.id, org.id, year, userLogin).catch(console.error);
 
     return NextResponse.json({
       success: true,
       analysisRunId: analysisRun.id,
       orgLogin,
-      year,
       userLogin,
+      year,
       message: "Analysis started",
     });
   } catch (error) {
@@ -175,7 +250,7 @@ export async function POST(request: NextRequest) {
 // 분석 실행 (백그라운드)
 // ============================================
 
-async function runAnalysis(
+async function runUserAnalysis(
   analysisRunId: string,
   orgId: string,
   year: number,
@@ -229,7 +304,7 @@ async function runAnalysis(
     const { updateWorkUnitScores } = await import("@/lib/analysis/scoring");
     await updateWorkUnitScores(analysisRunId, orgId);
 
-    // 5. Phase 4: AI 샘플링
+    // 5. Phase 4: 샘플링
     await updatePhase(analysisRunId, "SAMPLING", 4, "AI 샘플링 중...");
     const { selectSamplesPerUserPerRepo, saveSamplingResultForUser } = await import("@/lib/ai/sampling");
 
@@ -280,14 +355,8 @@ async function runAnalysis(
         primaryPaths: extractPrimaryPaths(wu.commits.flatMap((wuc) => wuc.commit.files.map((f) => f.path))),
       }));
 
-      const samplingResult = await selectSamplesPerUserPerRepo(userWorkUnitData, {
-        samplesPerRepo: 3,
-        maxTotalSamples: 15,
-        minImpactScore: 0,
-      });
-
+      const samplingResult = await selectSamplesPerUserPerRepo(userWorkUnitData);
       await saveSamplingResultForUser(analysisRunId, userLogin, samplingResult);
-      console.log(`[Analysis] Sampled ${samplingResult.selectedWorkUnitIds.length} WorkUnits for ${userLogin}`);
     }
 
     // AI 분석 (ANTHROPIC_API_KEY가 있는 경우만)
@@ -420,8 +489,6 @@ async function runDetailedUserAnalysis(
     stage3Result
   );
   await saveStage4Result(report.id, stage4Result, stage4Tokens);
-
-  console.log(`[Analysis] Detailed analysis completed for ${userLogin}`);
 }
 
 function summarizeStage1(results: Map<string, any>) {
@@ -479,3 +546,4 @@ function extractPrimaryPaths(paths: string[]): string[] {
     .slice(0, 3)
     .map(([dir]) => dir);
 }
+

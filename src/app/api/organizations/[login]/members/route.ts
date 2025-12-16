@@ -27,7 +27,12 @@ export async function GET(
       where: { login },
       include: {
         members: {
-          where: { userId: session.user.id },
+          where: {
+            OR: [
+              { userId: session.user.id },
+              { githubLogin: session.user.login },
+            ],
+          },
         },
       },
     });

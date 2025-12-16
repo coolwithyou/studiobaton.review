@@ -21,12 +21,17 @@ export async function GET(
   const { login } = await params;
 
   try {
-    // 조직 조회 (멤버십 확인)
+    // 조직 조회 (멤버십 확인 - userId 또는 githubLogin으로)
     const org = await db.organization.findUnique({
       where: { login },
       include: {
         members: {
-          where: { userId: session.user.id },
+          where: {
+            OR: [
+              { userId: session.user.id },
+              { githubLogin: session.user.login },
+            ],
+          },
         },
         _count: {
           select: { repos: true, members: true, syncJobs: true },
@@ -100,12 +105,17 @@ export async function PATCH(
   const { login } = await params;
 
   try {
-    // 조직 조회 및 권한 확인
+    // 조직 조회 및 권한 확인 (userId 또는 githubLogin으로)
     const org = await db.organization.findUnique({
       where: { login },
       include: {
         members: {
-          where: { userId: session.user.id },
+          where: {
+            OR: [
+              { userId: session.user.id },
+              { githubLogin: session.user.login },
+            ],
+          },
         },
       },
     });

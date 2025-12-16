@@ -28,7 +28,12 @@ export async function GET(request: NextRequest) {
         org: {
           include: {
             members: {
-              where: { userId: session.user.id },
+              where: {
+                OR: [
+                  { userId: session.user.id },
+                  { githubLogin: session.user.login },
+                ],
+              },
             },
           },
         },
