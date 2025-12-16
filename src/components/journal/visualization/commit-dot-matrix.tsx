@@ -84,7 +84,7 @@ export function CommitDotMatrix({ commits, year }: CommitDotMatrixProps) {
         } else {
           repoMap.set(commit.repoFullName, {
             repoFullName: commit.repoFullName,
-            repoName: commit.repoName,
+            repoName: commit.repoFullName.split('/').pop() || commit.repoFullName,
             commits: [{
               sha: commit.sha,
               message: commit.message,

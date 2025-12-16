@@ -25,9 +25,10 @@ model Organization {
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
-  repos    Repository[]
-  members  OrganizationMember[]
-  syncJobs CommitSyncJob[]
+  repos        Repository[]
+  members      OrganizationMember[]
+  syncJobs     CommitSyncJob[]
+  analysisRuns AnalysisRun[]
 }
 
 model OrganizationMember {
@@ -89,6 +90,7 @@ model Repository {
   org          Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)
   commits      Commit[]
   pullRequests PullRequest[]
+  workUnits    WorkUnit[]
 
   @@index([orgId])
 }
@@ -127,10 +129,12 @@ model Commit {
   deletions    Int      @default(0)
   filesChanged Int      @default(0)
 
-  repo    Repository          @relation(fields: [repoId], references: [id], onDelete: Cascade)
-  author  GitHubUser          @relation(fields: [authorLogin], references: [login])
-  files   CommitFile[]
-  prLinks PullRequestCommit[]
+  repo          Repository          @relation(fields: [repoId], references: [id], onDelete: Cascade)
+  author        GitHubUser          @relation(fields: [authorLogin], references: [login])
+  files         CommitFile[]
+  prLinks       PullRequestCommit[]
+  diff          CommitDiff?
+  workUnitLinks WorkUnitCommit[]
 
   @@unique([repoId, sha])
   @@index([authorLogin, committedAt])
@@ -221,4 +225,138 @@ model PullRequestCommit {
 
   @@id([prId, commitId])
   @@index([commitId])
+}
+
+// ============================================
+// 분석 실행
+// ============================================
+
+model AnalysisRun {
+  id          String         @id @default(cuid())
+  orgId       String
+  year        Int
+  status      AnalysisStatus @default(PENDING)
+  phase       String? // METRICS, CLUSTERING, SAMPLING, ANALYZING, DONE
+  progress    Json? // { currentStep, totalSteps, message }
+  error       String?        @db.Text
+  startedAt   DateTime?
+  finishedAt  DateTime?
+  createdAt   DateTime       @default(now())
+  createdById String?
+
+  org       Organization   @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  workUnits WorkUnit[]
+  reports   YearlyReport[]
+
+  @@unique([orgId, year])
+  @@index([status])
+  @@index([orgId])
+}
+
+enum AnalysisStatus {
+  PENDING
+  IN_PROGRESS
+  COMPLETED
+  FAILED
+}
+
+// ============================================
+// WorkUnit: 관련 커밋을 묶은 작업 단위
+// ============================================
+
+model WorkUnit {
+  id            String   @id @default(cuid())
+  analysisRunId String
+  userLogin     String
+  repoId        String
+  title         String? // AI가 생성한 작업 제목
+  summary       String?  @db.Text // AI가 생성한 작업 요약
+  workType      String? // feature, bugfix, refactor, docs, test, chore
+  impactScore   Float    @default(0)
+  impactFactors Json? // 점수 산출 근거
+  isSampled     Boolean  @default(false)
+  startDate     DateTime
+  endDate       DateTime
+  createdAt     DateTime @default(now())
+
+  analysisRun AnalysisRun      @relation(fields: [analysisRunId], references: [id], onDelete: Cascade)
+  repo        Repository       @relation(fields: [repoId], references: [id], onDelete: Cascade)
+  commits     WorkUnitCommit[]
+  aiReviews   AiReview[]
+
+  @@index([analysisRunId, userLogin])
+  @@index([repoId])
+  @@index([impactScore(sort: Desc)])
+}
+
+model WorkUnitCommit {
+  workUnitId String
+  commitId   String
+
+  workUnit WorkUnit @relation(fields: [workUnitId], references: [id], onDelete: Cascade)
+  commit   Commit   @relation(fields: [commitId], references: [id], onDelete: Cascade)
+
+  @@id([workUnitId, commitId])
+  @@index([commitId])
+}
+
+// ============================================
+// AI 리뷰 결과
+// ============================================
+
+model AiReview {
+  id            String   @id @default(cuid())
+  workUnitId    String? // WorkUnit 단위 리뷰
+  reportId      String? // YearlyReport 단위 리뷰 (종합)
+  stage         Int // 0: 샘플링, 1: 코드품질, 2: 패턴, 3: 성장, 4: 종합
+  promptVersion String   @default("v1.0.0")
+  result        Json // 구조화된 분석 결과
+  tokenUsage    Json? // { inputTokens, outputTokens, totalCost }
+  createdAt     DateTime @default(now())
+
+  workUnit WorkUnit?     @relation(fields: [workUnitId], references: [id], onDelete: Cascade)
+  report   YearlyReport? @relation(fields: [reportId], references: [id], onDelete: Cascade)
+
+  @@index([workUnitId])
+  @@index([reportId])
+  @@index([stage])
+}
+
+// ============================================
+// 샘플링된 커밋의 Diff
+// ============================================
+
+model CommitDiff {
+  id        String   @id @default(cuid())
+  commitId  String   @unique
+  diff      String   @db.Text // 전체 diff (파일별)
+  summary   String?  @db.Text // AI가 생성한 요약
+  createdAt DateTime @default(now())
+
+  commit Commit @relation(fields: [commitId], references: [id], onDelete: Cascade)
+}
+
+// ============================================
+// 연간 평가 리포트
+// ============================================
+
+model YearlyReport {
+  id             String    @id @default(cuid())
+  analysisRunId  String
+  userLogin      String
+  metrics        Json // 정량 지표 (DeveloperMetrics)
+  aiInsights     Json? // AI 분석 결과 (Stage4Result)
+  overallScore   Json? // 종합 점수 { productivity, codeQuality, diversity, collaboration, growth }
+  charts         Json? // 차트 데이터
+  managerComment String?   @db.Text
+  confirmedAt    DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  analysisRun AnalysisRun @relation(fields: [analysisRunId], references: [id], onDelete: Cascade)
+  aiReviews   AiReview[]
+
+  @@unique([analysisRunId, userLogin])
+  @@index([analysisRunId])
+  @@index([userLogin])
 }

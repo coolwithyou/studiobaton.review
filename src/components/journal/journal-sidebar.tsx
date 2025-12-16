@@ -45,12 +45,12 @@ export function JournalSidebar({
   };
 
   const getMonthStatusBadge = (monthData: typeof monthsData[0]) => {
-    if (monthData.monthlyAnalysis?.status === "COMPLETED") {
+    if (monthData.monthlyAnalysis?.status === "DONE") {
       return <Badge variant="secondary" className="ml-2 text-xs">완료</Badge>;
     }
 
     const completedWeeks = monthData.weeklyAnalyses.filter(
-      w => w.status === "COMPLETED"
+      w => w.status === "DONE"
     ).length;
     const totalWeeks = monthData.weeklyAnalyses.length;
 

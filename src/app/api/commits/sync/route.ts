@@ -86,7 +86,7 @@ export async function POST(request: NextRequest) {
     });
 
     const permissions = installation.permissions || {};
-    if (!permissions.pull_requests || permissions.pull_requests === "none") {
+    if (!permissions.pull_requests || (permissions.pull_requests as string) === "none") {
       return NextResponse.json(
         {
           error: "Pull Request 권한이 없습니다. GitHub App 설정에서 Pull requests 읽기 권한을 추가해주세요.",

@@ -53,7 +53,7 @@ export default async function CommitSyncPage({
       <SyncJobManager
         orgLogin={org.login}
         orgName={org.name || org.login}
-        existingJobs={syncJobs}
+        existingJobs={syncJobs as any}
       />
     </div>
   );

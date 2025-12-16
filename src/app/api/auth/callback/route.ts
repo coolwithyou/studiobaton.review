@@ -123,7 +123,7 @@ export async function GET(request: NextRequest) {
     const session = await getSession();
     session.user = {
       id: user.id,
-      githubId: user.githubId,
+      githubId: Number(user.githubId),
       login: user.login,
       name: user.name,
       email: user.email,
