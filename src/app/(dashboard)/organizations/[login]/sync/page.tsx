@@ -1,7 +1,7 @@
 import { notFound, redirect } from "next/navigation";
 import { getUser } from "@/lib/session";
 import { db } from "@/lib/db";
-import { SyncJobManager } from "@/components/analysis/sync-job-manager";
+import { SyncJobManager } from "@/components/sync/sync-job-manager";
 
 export default async function CommitSyncPage({
   params,

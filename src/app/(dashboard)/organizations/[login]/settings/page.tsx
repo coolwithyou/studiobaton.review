@@ -52,7 +52,7 @@ export default async function OrganizationSettingsPage({
         orderBy: { name: "asc" },
       },
       _count: {
-        select: { repos: true, members: true, analysisRuns: true },
+        select: { repos: true, members: true, syncJobs: true },
       },
     },
   });
@@ -137,11 +137,11 @@ export default async function OrganizationSettingsPage({
         </Card>
         <Card>
           <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium">분석 횟수</CardTitle>
+            <CardTitle className="text-sm font-medium">동기화 작업</CardTitle>
             <BarChart3 className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{org._count.analysisRuns}회</div>
+            <div className="text-2xl font-bold">{org._count.syncJobs}회</div>
           </CardContent>
         </Card>
       </div>

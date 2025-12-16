@@ -29,7 +29,7 @@ export async function GET(
           where: { userId: session.user.id },
         },
         _count: {
-          select: { repos: true, members: true, analysisRuns: true },
+          select: { repos: true, members: true, syncJobs: true },
         },
         repos: {
           orderBy: { name: "asc" },
@@ -69,7 +69,7 @@ export async function GET(
       stats: {
         repoCount: org._count.repos,
         memberCount: org._count.members,
-        analysisCount: org._count.analysisRuns,
+        syncJobCount: org._count.syncJobs,
       },
       repos: org.repos,
     });
