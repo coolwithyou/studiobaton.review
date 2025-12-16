@@ -2,33 +2,16 @@ import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import { getUser } from "@/lib/session";
 import { db } from "@/lib/db";
 import {
-  Plus,
-  BarChart3,
-  FileText,
-  Clock,
-  CheckCircle2,
-  XCircle,
-  Loader2,
-  ArrowRight,
+  RefreshCw,
   Settings,
+  GitCommit,
+  Users,
+  FolderGit2,
+  Calendar,
 } from "lucide-react";
-import { RunStatus } from "@prisma/client";
-
-const statusConfig: Record<RunStatus, { label: string; icon: React.ElementType; color: string }> = {
-  QUEUED: { label: "대기 중", icon: Clock, color: "text-yellow-600" },
-  SCANNING_REPOS: { label: "저장소 스캔", icon: Loader2, color: "text-blue-600" },
-  SCANNING_COMMITS: { label: "커밋 수집", icon: Loader2, color: "text-blue-600" },
-  BUILDING_UNITS: { label: "분석 중", icon: Loader2, color: "text-blue-600" },
-  AWAITING_AI_CONFIRMATION: { label: "AI 확인 대기", icon: Clock, color: "text-yellow-600" },
-  REVIEWING: { label: "AI 리뷰", icon: Loader2, color: "text-purple-600" },
-  FINALIZING: { label: "완료 중", icon: Loader2, color: "text-green-600" },
-  DONE: { label: "완료", icon: CheckCircle2, color: "text-green-600" },
-  FAILED: { label: "실패", icon: XCircle, color: "text-red-600" },
-};
 
 async function getDashboardData(orgLogin: string, userId: string) {
   // 조직 조회 및 권한 확인
@@ -50,46 +33,70 @@ async function getDashboardData(orgLogin: string, userId: string) {
     redirect("/dashboard");
   }
 
-  // 해당 조직의 최근 분석 실행 5개
-  const recentRuns = await db.analysisRun.findMany({
+  // 저장소 수
+  const repoCount = await db.repository.count({
+    where: { orgId: org.id },
+  });
+
+  // 멤버 수
+  const memberCount = await db.organizationMember.count({
+    where: { orgId: org.id },
+  });
+
+  // 전체 커밋 수
+  const totalCommits = await db.commit.count({
+    where: {
+      repo: { orgId: org.id },
+    },
+  });
+
+  // 고유 기여자 수
+  const uniqueContributors = await db.commit.findMany({
+    where: {
+      repo: { orgId: org.id },
+    },
+    select: {
+      authorLogin: true,
+    },
+    distinct: ["authorLogin"],
+  });
+
+  // 최근 동기화 작업
+  const recentSyncJobs = await db.commitSyncJob.findMany({
     where: {
       orgId: org.id,
-    },
-    include: {
-      user: {
-        select: { login: true, name: true },
-      },
-      _count: {
-        select: { reports: true, workUnits: true },
-      },
     },
     orderBy: { createdAt: "desc" },
     take: 5,
   });
 
-  // 통계
-  const totalRuns = await db.analysisRun.count({
-    where: { orgId: org.id },
-  });
-
-  const completedRuns = await db.analysisRun.count({
-    where: { orgId: org.id, status: "DONE" },
-  });
-
-  const totalReports = await db.yearlyReport.count({
+  // 기여자별 커밋 수 (상위 10명)
+  const topContributors = await db.commit.groupBy({
+    by: ["authorLogin"],
     where: {
-      run: { orgId: org.id },
+      repo: { orgId: org.id },
     },
+    _count: {
+      id: true,
+    },
+    orderBy: {
+      _count: {
+        id: "desc",
+      },
+    },
+    take: 10,
   });
 
   return {
     org,
-    recentRuns,
     stats: {
-      totalRuns,
-      completedRuns,
-      totalReports,
+      repoCount,
+      memberCount,
+      totalCommits,
+      contributorCount: uniqueContributors.length,
     },
+    recentSyncJobs,
+    topContributors,
   };
 }
 
@@ -104,7 +111,7 @@ export default async function OrganizationDashboardPage({
     redirect("/login");
   }
 
-  const { org, recentRuns, stats } = await getDashboardData(login, user.id);
+  const { org, stats, recentSyncJobs, topContributors } = await getDashboardData(login, user.id);
 
   return (
     <div className="container py-8 px-4">
@@ -112,22 +119,69 @@ export default async function OrganizationDashboardPage({
       <div className="mb-8">
         <h1 className="text-3xl font-bold">{org.name || org.login}</h1>
         <p className="mt-2 text-muted-foreground">
-          조직의 코드 기여를 분석하고 연간 리포트를 생성하세요.
+          조직의 커밋 데이터를 수집하고 관리하세요.
         </p>
       </div>
 
+      {/* Stats Overview */}
+      <div className="mb-8 grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
+            <CardTitle className="text-sm font-medium">전체 커밋</CardTitle>
+            <GitCommit className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <p className="text-2xl font-bold">{stats.totalCommits.toLocaleString()}</p>
+            <p className="text-xs text-muted-foreground">수집된 커밋 수</p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
+            <CardTitle className="text-sm font-medium">기여자</CardTitle>
+            <Users className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <p className="text-2xl font-bold">{stats.contributorCount}</p>
+            <p className="text-xs text-muted-foreground">고유 기여자 수</p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
+            <CardTitle className="text-sm font-medium">저장소</CardTitle>
+            <FolderGit2 className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <p className="text-2xl font-bold">{stats.repoCount}</p>
+            <p className="text-xs text-muted-foreground">전체 저장소 수</p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
+            <CardTitle className="text-sm font-medium">멤버</CardTitle>
+            <Users className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <p className="text-2xl font-bold">{stats.memberCount}</p>
+            <p className="text-xs text-muted-foreground">조직 멤버 수</p>
+          </CardContent>
+        </Card>
+      </div>
+
       {/* Quick Actions */}
-      <div className="mb-8 grid gap-4 md:grid-cols-3">
+      <div className="mb-8 grid gap-4 md:grid-cols-2">
         <Card className="hover:border-primary/50 transition-colors">
-          <Link href={`/organizations/${login}/analysis/new`}>
+          <Link href={`/organizations/${login}/sync`}>
             <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-sm font-medium">새 분석 실행</CardTitle>
-              <Plus className="h-4 w-4 text-muted-foreground" />
+              <CardTitle className="text-sm font-medium">커밋 동기화</CardTitle>
+              <RefreshCw className="h-4 w-4 text-muted-foreground" />
             </CardHeader>
             <CardContent>
               <p className="text-2xl font-bold">시작하기</p>
               <p className="text-xs text-muted-foreground">
-                연도를 선택하여 분석을 시작합니다
+                새로운 커밋 데이터를 수집합니다
               </p>
             </CardContent>
           </Link>
@@ -147,63 +201,56 @@ export default async function OrganizationDashboardPage({
             </CardContent>
           </Link>
         </Card>
-
-        <Card className="hover:border-primary/50 transition-colors">
-          <Link href={`/organizations/${login}/analysis`}>
-            <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-sm font-medium">분석 현황</CardTitle>
-              <BarChart3 className="h-4 w-4 text-muted-foreground" />
-            </CardHeader>
-            <CardContent>
-              <p className="text-2xl font-bold">{stats.completedRuns}회 완료</p>
-              <p className="text-xs text-muted-foreground">
-                총 {stats.totalRuns}회 분석 실행, {stats.totalReports}개 리포트
-              </p>
-            </CardContent>
-          </Link>
-        </Card>
       </div>
 
-      {/* Recent Analysis Runs */}
+      {/* Top Contributors */}
+      {topContributors.length > 0 && (
+        <Card className="mb-8">
+          <CardHeader>
+            <CardTitle>주요 기여자</CardTitle>
+            <CardDescription>커밋 수 기준 상위 기여자</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-3">
+              {topContributors.map((contributor, index) => (
+                <div key={contributor.authorLogin} className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <span className="text-sm text-muted-foreground w-6">#{index + 1}</span>
+                    <span className="font-medium">{contributor.authorLogin}</span>
+                  </div>
+                  <span className="text-sm text-muted-foreground">
+                    {contributor._count.id.toLocaleString()} 커밋
+                  </span>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Recent Sync Jobs */}
       <Card>
-        <CardHeader className="flex flex-row items-center justify-between">
-          <div>
-            <CardTitle>최근 분석</CardTitle>
-            <CardDescription>최근 실행된 분석 목록입니다</CardDescription>
-          </div>
-          <Button variant="outline" size="sm" asChild>
-            <Link href={`/organizations/${login}/analysis`}>
-              전체 보기
-              <ArrowRight className="ml-2 h-4 w-4" />
-            </Link>
-          </Button>
+        <CardHeader>
+          <CardTitle>최근 동기화 기록</CardTitle>
+          <CardDescription>커밋 동기화 작업 히스토리</CardDescription>
         </CardHeader>
         <CardContent>
-          {recentRuns.length > 0 ? (
-            <div className="space-y-4">
-              {recentRuns.map((run) => {
-                const config = statusConfig[run.status];
-                const StatusIcon = config.icon;
-                const isRunning = !["DONE", "FAILED"].includes(run.status);
-
+          {recentSyncJobs.length > 0 ? (
+            <div className="space-y-3">
+              {recentSyncJobs.map((job) => {
+                const progress = job.progress as { totalCommits?: number } | null;
                 return (
                   <Link
-                    key={run.id}
-                    href={`/organizations/${login}/analysis/${run.id}`}
+                    key={job.id}
+                    href={`/organizations/${login}/sync/${job.id}`}
                     className="flex items-center justify-between rounded-lg border p-4 hover:bg-muted/50 transition-colors"
                   >
                     <div className="flex items-center gap-4">
-                      <div className={`${config.color}`}>
-                        <StatusIcon
-                          className={`h-5 w-5 ${isRunning ? "animate-spin" : ""}`}
-                        />
-                      </div>
+                      <Calendar className="h-5 w-5 text-muted-foreground" />
                       <div>
-                        <p className="font-medium">
-                          {run.user.name || run.userLogin} - {run.year}년
-                        </p>
+                        <p className="font-medium">{job.year}년</p>
                         <p className="text-sm text-muted-foreground">
-                          {run.createdAt.toLocaleDateString("ko-KR", {
+                          {job.createdAt.toLocaleDateString("ko-KR", {
                             year: "numeric",
                             month: "long",
                             day: "numeric",
@@ -211,22 +258,13 @@ export default async function OrganizationDashboardPage({
                         </p>
                       </div>
                     </div>
-                    <div className="flex items-center gap-4">
-                      <div className="text-right text-sm text-muted-foreground">
-                        <p>{run._count.workUnits} Work Units</p>
-                        <p>{run._count.reports} 리포트</p>
-                      </div>
-                      <Badge
-                        variant={
-                          run.status === "DONE"
-                            ? "default"
-                            : run.status === "FAILED"
-                              ? "destructive"
-                              : "secondary"
-                        }
-                      >
-                        {config.label}
-                      </Badge>
+                    <div className="text-right">
+                      <p className="text-sm font-medium capitalize">{job.status}</p>
+                      {progress?.totalCommits && (
+                        <p className="text-xs text-muted-foreground">
+                          {progress.totalCommits.toLocaleString()} 커밋
+                        </p>
+                      )}
                     </div>
                   </Link>
                 );
@@ -234,15 +272,15 @@ export default async function OrganizationDashboardPage({
             </div>
           ) : (
             <div className="flex flex-col items-center justify-center py-8 text-center">
-              <FileText className="mb-4 h-12 w-12 text-muted-foreground" />
-              <p className="mb-2 font-medium">아직 분석 기록이 없습니다</p>
+              <RefreshCw className="mb-4 h-12 w-12 text-muted-foreground" />
+              <p className="mb-2 font-medium">아직 동기화 기록이 없습니다</p>
               <p className="mb-4 text-sm text-muted-foreground">
-                첫 번째 분석을 실행해보세요!
+                첫 번째 커밋 동기화를 시작해보세요!
               </p>
               <Button asChild>
-                <Link href={`/organizations/${login}/analysis/new`}>
-                  <Plus className="mr-2 h-4 w-4" />
-                  새 분석 실행
+                <Link href={`/organizations/${login}/sync`}>
+                  <RefreshCw className="mr-2 h-4 w-4" />
+                  커밋 동기화 시작
                 </Link>
               </Button>
             </div>

@@ -15,8 +15,6 @@ import {
 } from "@/components/ui/dropdown-menu";
 import {
   LayoutDashboard,
-  BarChart3,
-  Plus,
   Settings,
   ChevronDown,
   Building2,
@@ -37,8 +35,6 @@ interface OrgSidebarProps {
 
 const navigation = [
   { name: "대시보드", href: "", icon: LayoutDashboard },
-  { name: "분석 목록", href: "/analysis", icon: BarChart3 },
-  { name: "새 분석", href: "/analysis/new", icon: Plus },
   { name: "커밋 동기화", href: "/sync", icon: RefreshCw },
   { name: "설정", href: "/settings", icon: Settings },
 ];

@@ -6,45 +6,45 @@ import { Footer } from "@/components/layout/footer";
 import { getUser } from "@/lib/session";
 import {
   GitBranch,
-  BarChart3,
+  Database,
   Users,
   FileCode,
-  Sparkles,
+  RefreshCw,
   Shield,
-  TrendingUp,
+  FolderGit2,
   CheckCircle2,
 } from "lucide-react";
 
 const features = [
   {
     icon: GitBranch,
-    title: "커밋 기반 분석",
-    description: "PR 리뷰 없이도 커밋 히스토리만으로 의미 있는 기여도를 분석합니다.",
+    title: "커밋 데이터 수집",
+    description: "조직의 모든 저장소에서 커밋 히스토리를 자동으로 수집하고 저장합니다.",
   },
   {
-    icon: Sparkles,
-    title: "AI 코드 리뷰",
-    description: "GPT-4o/Claude가 대표 작업을 분석하여 강점, 리스크, 개선점을 제안합니다.",
+    icon: Database,
+    title: "체계적인 데이터 관리",
+    description: "커밋, 파일 변경, PR 정보를 구조화하여 효율적으로 관리합니다.",
   },
   {
-    icon: BarChart3,
-    title: "Work Unit 클러스터링",
-    description: "개별 커밋이 아닌 '작업 단위'로 묶어 의미 있는 평가가 가능합니다.",
+    icon: FolderGit2,
+    title: "다중 저장소 지원",
+    description: "조직의 모든 저장소를 한 번에 관리하고 통합된 뷰를 제공합니다.",
   },
   {
-    icon: TrendingUp,
-    title: "연도별 비교",
-    description: "매년 같은 기준으로 분석하여 개인의 성장 추세를 추적합니다.",
+    icon: RefreshCw,
+    title: "자동 동기화",
+    description: "연도별로 커밋 데이터를 자동으로 수집하고 최신 상태를 유지합니다.",
   },
   {
     icon: Shield,
-    title: "임팩트 스코어링",
-    description: "LoC 외에 핵심 모듈, 핫스팟, 리스크 영역 등 맥락을 반영합니다.",
+    title: "안전한 접근",
+    description: "GitHub App을 통한 안전한 인증과 최소 권한 원칙을 따릅니다.",
   },
   {
     icon: Users,
     title: "팀 협업",
-    description: "매니저가 리포트를 검토/확정하고 팀 기준을 커스터마이징할 수 있습니다.",
+    description: "조직 멤버를 관리하고 기여자별 커밋 통계를 확인할 수 있습니다.",
   },
 ];
 
@@ -56,13 +56,13 @@ const steps = [
   },
   {
     step: 2,
-    title: "분석 실행",
-    description: "연도와 팀원을 선택하고 분석을 시작합니다. 진행률을 실시간으로 확인할 수 있습니다.",
+    title: "커밋 수집",
+    description: "연도를 선택하고 커밋 동기화를 시작합니다. 진행 상황을 실시간으로 확인할 수 있습니다.",
   },
   {
     step: 3,
-    title: "리포트 확인",
-    description: "AI가 생성한 연간 리포트와 차트를 확인하고, 매니저 코멘트를 추가합니다.",
+    title: "데이터 관리",
+    description: "수집된 커밋 데이터와 통계를 확인하고 관리합니다.",
   },
 ];
 
@@ -81,23 +81,23 @@ export default async function HomePage() {
             <div className="mx-auto max-w-3xl text-center">
               <div className="mb-4 inline-flex items-center rounded-full border px-4 py-1.5 text-sm">
                 <FileCode className="mr-2 h-4 w-4" />
-                GitHub 연간 코드 분석 시스템
+                GitHub 커밋 데이터 수집 시스템
               </div>
               <h1 className="mb-6 text-4xl font-bold tracking-tight sm:text-5xl md:text-6xl">
-                팀원의 코드 기여를
+                조직의 커밋 데이터를
                 <br />
-                <span className="text-primary">AI로 분석</span>하세요
+                <span className="text-primary">체계적으로</span> 관리하세요
               </h1>
               <p className="mb-8 text-lg text-muted-foreground md:text-xl">
-                Organization과 연도만 입력하면, 전체 저장소를 순회하며
+                조직을 연동하면 모든 저장소의 커밋 히스토리를 자동으로 수집하고
                 <br className="hidden sm:inline" />
-                커밋 기반으로 기여도와 코드 품질을 분석하여 연간 리포트를 생성합니다.
+                구조화된 데이터로 저장하여 다양한 분석에 활용할 수 있습니다.
               </p>
               <div className="flex flex-col gap-4 sm:flex-row sm:justify-center">
                 {user ? (
                   <Button size="lg" asChild>
                     <Link href="/dashboard">
-                      <BarChart3 className="mr-2 h-5 w-5" />
+                      <Database className="mr-2 h-5 w-5" />
                       대시보드로 이동
                     </Link>
                   </Button>
@@ -123,7 +123,7 @@ export default async function HomePage() {
             <div className="mx-auto mb-12 max-w-2xl text-center">
               <h2 className="mb-4 text-3xl font-bold">주요 기능</h2>
               <p className="text-muted-foreground">
-                PR 리뷰 문화가 약한 팀도 커밋 기반으로 의미 있는 코드 분석이 가능합니다.
+                조직의 모든 커밋 데이터를 안전하게 수집하고 효율적으로 관리합니다.
               </p>
             </div>
             <div className="mx-auto grid max-w-5xl gap-6 md:grid-cols-2 lg:grid-cols-3">
@@ -155,7 +155,7 @@ export default async function HomePage() {
             <div className="mx-auto mb-12 max-w-2xl text-center">
               <h2 className="mb-4 text-3xl font-bold">사용 방법</h2>
               <p className="text-muted-foreground">
-                3단계만으로 팀원의 연간 코드 기여 리포트를 생성할 수 있습니다.
+                3단계만으로 조직의 커밋 데이터 수집을 시작할 수 있습니다.
               </p>
             </div>
             <div className="mx-auto grid max-w-4xl gap-8 md:grid-cols-3">
@@ -179,7 +179,7 @@ export default async function HomePage() {
               <CheckCircle2 className="mx-auto mb-4 h-12 w-12 text-primary" />
               <h2 className="mb-4 text-3xl font-bold">지금 시작하세요</h2>
               <p className="mb-8 text-muted-foreground">
-                무료로 시작하고, 팀의 코드 기여를 체계적으로 관리하세요.
+                무료로 시작하고, 조직의 커밋 데이터를 체계적으로 관리하세요.
               </p>
               {!user && (
                 <Button size="lg" asChild>

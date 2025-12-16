@@ -100,19 +100,11 @@ function OrganizationCard({ org }: { org: DbOrganization }) {
         </div>
         <div className="mt-4 flex gap-2">
           {hasInstallation ? (
-            <>
-              <Button variant="outline" size="sm" className="flex-1" asChild>
-                <Link href={`/organizations/${org.login}/settings`}>
-                  <Settings className="mr-2 h-4 w-4" />
-                  설정
-                </Link>
-              </Button>
-              <Button size="sm" className="flex-1" asChild>
-                <Link href={`/organizations/${org.login}/analysis/new`}>
-                  분석 시작
-                </Link>
-              </Button>
-            </>
+            <Button size="sm" className="w-full" asChild>
+              <Link href={`/organizations/${org.login}`}>
+                조직 관리
+              </Link>
+            </Button>
           ) : (
             <Button size="sm" className="w-full" asChild>
               <a href={githubAppInstallUrl} target="_blank" rel="noopener noreferrer">
@@ -202,7 +194,7 @@ export default async function DashboardPage() {
         <div>
           <h1 className="text-3xl font-bold">대시보드</h1>
           <p className="mt-2 text-muted-foreground">
-            조직을 선택하여 분석을 시작하세요.
+            조직을 선택하여 커밋 데이터를 관리하세요.
           </p>
         </div>
         <Button asChild>
@@ -241,9 +233,9 @@ export default async function DashboardPage() {
             </div>
             <div className="rounded-lg border p-4">
               <div className="mb-2 text-2xl font-bold">3</div>
-              <h4 className="mb-1 font-medium">분석 시작</h4>
+              <h4 className="mb-1 font-medium">커밋 수집</h4>
               <p className="text-sm text-muted-foreground">
-                설치 완료 후 바로 코드 분석을 시작할 수 있습니다.
+                설치 완료 후 조직의 커밋 데이터를 수집하고 관리할 수 있습니다.
               </p>
             </div>
           </div>

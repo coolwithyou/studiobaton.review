@@ -25,10 +25,9 @@ model Organization {
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
-  repos        Repository[]
-  analysisRuns AnalysisRun[]
-  members      OrganizationMember[]
-  syncJobs     CommitSyncJob[]
+  repos    Repository[]
+  members  OrganizationMember[]
+  syncJobs CommitSyncJob[]
 }
 
 model OrganizationMember {
@@ -66,7 +65,6 @@ model User {
   updatedAt   DateTime @updatedAt
 
   organizations OrganizationMember[]
-  analysisRuns  AnalysisRun[]        @relation("CreatedBy")
   syncJobs      CommitSyncJob[]      @relation("SyncCreatedBy")
 }
 
@@ -90,7 +88,6 @@ model Repository {
 
   org          Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)
   commits      Commit[]
-  workUnits    WorkUnit[]
   pullRequests PullRequest[]
 
   @@index([orgId])
@@ -111,122 +108,7 @@ model GitHubUser {
   updatedAt DateTime @updatedAt
 
   commits      Commit[]
-  workUnits    WorkUnit[]
-  reports      YearlyReport[]
-  analysisRuns AnalysisRun[]
   pullRequests PullRequest[]
-}
-
-// ============================================
-// 분석 실행
-// ============================================
-
-model AnalysisRun {
-  id          String    @id @default(cuid())
-  orgId       String
-  userLogin   String // 단일 대상 사용자
-  year        Int
-  status      RunStatus @default(QUEUED)
-  progress    Json? // { total: N, completed: M, failed: K }
-  options     Json // 분석 옵션 스냅샷
-  error       String?
-  startedAt   DateTime?
-  finishedAt  DateTime?
-  createdAt   DateTime  @default(now())
-  createdById String?
-
-  org             Organization      @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  user            GitHubUser        @relation(fields: [userLogin], references: [login])
-  createdBy       User?             @relation("CreatedBy", fields: [createdById], references: [id])
-  workUnits       WorkUnit[]
-  reports         YearlyReport[]
-  jobLogs         JobLog[]
-  weeklyAnalyses  WeeklyAnalysis[]
-  monthlyAnalyses MonthlyAnalysis[]
-
-  @@unique([orgId, userLogin, year])
-  @@index([status])
-  @@index([userLogin])
-}
-
-enum RunStatus {
-  QUEUED
-  SCANNING_REPOS
-  SCANNING_COMMITS
-  BUILDING_UNITS
-  AWAITING_AI_CONFIRMATION
-  REVIEWING
-  FINALIZING
-  DONE
-  FAILED
-}
-
-// ============================================
-// 업무 일지 분석
-// ============================================
-
-model WeeklyAnalysis {
-  id         String   @id @default(cuid())
-  runId      String
-  userLogin  String
-  year       Int
-  weekNumber Int // 1-52
-  startDate  DateTime
-  endDate    DateTime
-
-  // 분석 단계별 결과
-  stage1Result Json? // { keyCommits: CommitInfo[] }
-  stage2Result Json? // { commitReviews: CommitReview[] }
-  stage3Result Json? // { summary, keyActivities, workPattern, insights }
-
-  // 메타데이터
-  status     AnalysisStatus @default(PENDING)
-  error      String?        @db.Text
-  analyzedAt DateTime?
-  createdAt  DateTime       @default(now())
-  updatedAt  DateTime       @updatedAt
-
-  run AnalysisRun @relation(fields: [runId], references: [id], onDelete: Cascade)
-
-  @@unique([runId, weekNumber])
-  @@index([runId, userLogin])
-}
-
-model MonthlyAnalysis {
-  id        String @id @default(cuid())
-  runId     String
-  userLogin String
-  year      Int
-  month     Int // 1-12
-
-  // 분석 단계별 결과
-  stage1Result Json? // { keyCommits: CommitInfo[] }
-  stage2Result Json? // { commitReviews: CommitReview[] }
-  stage3Result Json? // { summary, keyActivities, patterns, recommendations }
-
-  // 주간 분석 참조
-  weeklyAnalysisIds String[] // 해당 월의 주간 분석 ID 목록
-
-  // 메타데이터
-  status     AnalysisStatus @default(PENDING)
-  error      String?        @db.Text
-  analyzedAt DateTime?
-  createdAt  DateTime       @default(now())
-  updatedAt  DateTime       @updatedAt
-
-  run AnalysisRun @relation(fields: [runId], references: [id], onDelete: Cascade)
-
-  @@unique([runId, month])
-  @@index([runId, userLogin])
-}
-
-enum AnalysisStatus {
-  PENDING // 분석 대기
-  STAGE1 // 1단계 진행 중
-  STAGE2 // 2단계 진행 중
-  STAGE3 // 3단계 진행 중
-  COMPLETED // 완료
-  FAILED // 실패
 }
 
 // ============================================
@@ -245,11 +127,10 @@ model Commit {
   deletions    Int      @default(0)
   filesChanged Int      @default(0)
 
-  repo          Repository          @relation(fields: [repoId], references: [id], onDelete: Cascade)
-  author        GitHubUser          @relation(fields: [authorLogin], references: [login])
-  files         CommitFile[]
-  workUnitLinks WorkUnitCommit[]
-  prLinks       PullRequestCommit[]
+  repo    Repository          @relation(fields: [repoId], references: [id], onDelete: Cascade)
+  author  GitHubUser          @relation(fields: [authorLogin], references: [login])
+  files   CommitFile[]
+  prLinks PullRequestCommit[]
 
   @@unique([repoId, sha])
   @@index([authorLogin, committedAt])
@@ -268,149 +149,6 @@ model CommitFile {
 
   @@index([commitId])
   @@index([path])
-}
-
-// ============================================
-// 작업 단위 (Work Unit)
-// ============================================
-
-model WorkUnit {
-  id        String @id @default(cuid())
-  runId     String
-  repoId    String
-  userLogin String
-
-  // 시간 범위
-  startAt DateTime
-  endAt   DateTime
-
-  // 통계
-  commitCount  Int
-  filesChanged Int
-  additions    Int
-  deletions    Int
-
-  // 분석 결과
-  summary       String?  @db.Text // 자동 생성 요약
-  primaryPaths  String[] // 주요 변경 경로 Top 5
-  impactScore   Float    @default(0)
-  impactFactors Json? // 스코어 세부 요인
-
-  // 플래그
-  isHotfix  Boolean @default(false)
-  hasRevert Boolean @default(false)
-  isSampled Boolean @default(false)
-
-  createdAt DateTime @default(now())
-
-  run      AnalysisRun      @relation(fields: [runId], references: [id], onDelete: Cascade)
-  repo     Repository       @relation(fields: [repoId], references: [id], onDelete: Cascade)
-  user     GitHubUser       @relation(fields: [userLogin], references: [login])
-  commits  WorkUnitCommit[]
-  aiReview AiReview?
-
-  @@index([runId, userLogin])
-  @@index([repoId])
-  @@index([impactScore(sort: Desc)])
-}
-
-model WorkUnitCommit {
-  workUnitId String
-  commitId   String
-  order      Int // 커밋 순서
-
-  workUnit WorkUnit @relation(fields: [workUnitId], references: [id], onDelete: Cascade)
-  commit   Commit   @relation(fields: [commitId], references: [id], onDelete: Cascade)
-
-  @@id([workUnitId, commitId])
-}
-
-// ============================================
-// AI 리뷰
-// ============================================
-
-model AiReview {
-  id         String @id @default(cuid())
-  workUnitId String @unique
-
-  // 모델 정보
-  model         String // gpt-4o, claude-3-5-sonnet 등
-  promptVersion String // v1.0.0
-  inputTokens   Int?
-  outputTokens  Int?
-
-  // 결과 (구조화)
-  result      Json // ReviewResult 타입
-  rawResponse String? @db.Text // 원본 응답 (디버깅용)
-
-  createdAt DateTime @default(now())
-
-  workUnit WorkUnit @relation(fields: [workUnitId], references: [id], onDelete: Cascade)
-}
-
-// ============================================
-// 연간 리포트
-// ============================================
-
-model YearlyReport {
-  id        String @id @default(cuid())
-  runId     String
-  userLogin String
-  year      Int
-
-  // 정량 지표
-  stats Json // ReportStats 타입
-
-  // AI 생성 텍스트
-  summary      String   @db.Text
-  strengths    String[]
-  improvements String[]
-  actionItems  String[]
-
-  // 매니저 입력
-  managerNotes String?   @db.Text
-  isFinalized  Boolean   @default(false)
-  finalizedAt  DateTime?
-  finalizedBy  String?
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  run  AnalysisRun @relation(fields: [runId], references: [id], onDelete: Cascade)
-  user GitHubUser  @relation(fields: [userLogin], references: [login])
-
-  @@unique([runId, userLogin])
-  @@index([userLogin, year])
-}
-
-// ============================================
-// Job 실행 로그
-// ============================================
-
-model JobLog {
-  id         String    @id @default(cuid())
-  runId      String
-  jobType    String
-  jobId      String // QStash message ID
-  status     JobStatus
-  input      Json?
-  output     Json?
-  error      String?   @db.Text
-  startedAt  DateTime
-  endedAt    DateTime?
-  retryCount Int       @default(0)
-
-  run AnalysisRun @relation(fields: [runId], references: [id], onDelete: Cascade)
-
-  @@index([runId, jobType])
-}
-
-enum JobStatus {
-  PENDING
-  RUNNING
-  COMPLETED
-  FAILED
-  RETRYING
 }
 
 // ============================================
