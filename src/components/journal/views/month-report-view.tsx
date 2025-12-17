@@ -5,7 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
-import { MonthlyAnalysisData, MonthlyAnalysisResult, WeeklyAnalysisData } from "@/types";
+import { MonthlyAnalysisData, WeeklyAnalysisData } from "@/types";
 import {
   Loader2,
   Sparkles,
@@ -106,8 +106,8 @@ export function MonthReportView({
     }
   };
 
-  const result = monthlyAnalysis?.stage3Result as MonthlyAnalysisResult | undefined;
-  const isCompleted = monthlyAnalysis?.status === "COMPLETED";
+  const result = (monthlyAnalysis as any)?.stage3Result;
+  const isCompleted = monthlyAnalysis?.status === "DONE";
 
   return (
     <div className="space-y-6 p-6">
@@ -228,7 +228,7 @@ export function MonthReportView({
                 </CardHeader>
                 <CardContent>
                   <ul className="space-y-3">
-                    {result.achievements.map((achievement, i) => (
+                    {result.achievements.map((achievement: string, i: number) => (
                       <li key={i} className="flex items-start gap-2">
                         <CheckCircle2 className="h-4 w-4 text-green-600 mt-0.5 flex-shrink-0" />
                         <span className="text-sm leading-relaxed">{achievement}</span>
@@ -250,7 +250,7 @@ export function MonthReportView({
                 </CardHeader>
                 <CardContent>
                   <ul className="space-y-3">
-                    {result.technicalGrowth.map((growth, i) => (
+                    {result.technicalGrowth.map((growth: string, i: number) => (
                       <li key={i} className="flex items-start gap-2">
                         <TrendingUp className="h-4 w-4 text-blue-600 mt-0.5 flex-shrink-0" />
                         <span className="text-sm leading-relaxed">{growth}</span>
@@ -288,7 +288,7 @@ export function MonthReportView({
               </CardHeader>
               <CardContent>
                 <ul className="space-y-3">
-                  {result.recommendations.map((rec, i) => (
+                  {result.recommendations.map((rec: string, i: number) => (
                     <li key={i} className="flex items-start gap-2">
                       <Lightbulb className="h-4 w-4 text-amber-600 mt-0.5 flex-shrink-0" />
                       <span className="text-sm leading-relaxed">{rec}</span>
@@ -307,7 +307,7 @@ export function MonthReportView({
               </CardHeader>
               <CardContent>
                 <div className="space-y-4">
-                  {result.weeklyBreakdown.map((weekData, i) => (
+                  {result.weeklyBreakdown.map((weekData: { week: number; summary: string; keyActivity: string }, i: number) => (
                     <div key={i}>
                       {i > 0 && <Separator className="my-4" />}
                       <div>
@@ -344,3 +344,4 @@ export function MonthReportView({
     </div>
   );
 }
+

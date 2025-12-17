@@ -198,6 +198,11 @@ export async function fetchAndSaveDiffsForAnalysis(
   orgId: string,
   maxCommitsPerWorkUnit: number = 3
 ): Promise<{ totalFetched: number; failed: number }> {
+  console.log(`\n${"=".repeat(60)}`);
+  console.log(`[DIFF_FETCH] 🚀 Diff 조회 시작: ${analysisRunId}`);
+  console.log(`[DIFF_FETCH] 시작 시간: ${new Date().toISOString()}`);
+  console.log(`${"=".repeat(60)}\n`);
+
   // 샘플링된 WorkUnit 조회
   const sampledWorkUnits = await db.workUnit.findMany({
     where: {
@@ -235,12 +240,23 @@ export async function fetchAndSaveDiffsForAnalysis(
 
   let totalFetched = 0;
   let failed = 0;
+  const totalWorkUnits = sampledWorkUnits.length;
+  const totalCommitsToFetch = sampledWorkUnits.reduce((sum, wu) =>
+    sum + Math.min(wu.commits.length, maxCommitsPerWorkUnit), 0
+  );
 
+  console.log(`[DIFF_FETCH] 샘플링된 WorkUnit: ${totalWorkUnits}개`);
+  console.log(`[DIFF_FETCH] 조회할 커밋: 최대 ${totalCommitsToFetch}개\n`);
+
+  let workUnitIndex = 0;
   for (const workUnit of sampledWorkUnits) {
+    workUnitIndex++;
+    console.log(`[DIFF_FETCH] [${workUnitIndex}/${totalWorkUnits}] WorkUnit: "${workUnit.repo.fullName}"`);
+
     // 변경량이 큰 커밋 우선 선택
     const sortedCommits = [...workUnit.commits]
-      .sort((a, b) => 
-        (b.commit.additions + b.commit.deletions) - 
+      .sort((a, b) =>
+        (b.commit.additions + b.commit.deletions) -
         (a.commit.additions + a.commit.deletions)
       )
       .slice(0, maxCommitsPerWorkUnit);
@@ -277,6 +293,10 @@ export async function fetchAndSaveDiffsForAnalysis(
       await sleep(100); // Rate limit 방지
     }
   }
+
+  console.log(`\n[DIFF_FETCH] ====== Diff 조회 완료 ======`);
+  console.log(`[DIFF_FETCH] 총 조회: ${totalFetched}개, 실패: ${failed}개`);
+  console.log(`[DIFF_FETCH] 완료 시간: ${new Date().toISOString()}\n`);
 
   return { totalFetched, failed };
 }

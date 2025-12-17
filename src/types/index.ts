@@ -168,6 +168,25 @@ export interface Stage0Result {
   }>;
 }
 
+// ============================================
+// 샘플링 결과 타입
+// ============================================
+
+export interface RepoSummary {
+  repoId: string;
+  repoFullName: string;
+  totalWorkUnits: number;
+  sampledWorkUnits: number;
+  totalCommits: number;
+  avgImpactScore: number;
+  workTypeDistribution: Record<string, number>;
+  samplingReason: string | null;
+}
+
+export interface SamplingResult extends Stage0Result {
+  repoSummaries: RepoSummary[];
+}
+
 export interface Stage1Result {
   codeQuality: {
     score: number;
@@ -287,4 +306,70 @@ export interface WeeklyAnalysisData {
   endDate: string;
   status: 'PENDING' | 'ANALYZING' | 'DONE' | 'FAILED';
   summary?: string;
+}
+
+// ============================================
+// Journal 분석 결과 타입
+// ============================================
+
+export interface WeeklyAnalysisResult {
+  summary: string;
+  achievements: string[];
+  challenges: string[];
+  recommendations: string[];
+  keyCommits: KeyCommitInfo[];
+  commitReviews: CommitReview[];
+  metrics?: {
+    totalCommits: number;
+    totalAdditions: number;
+    totalDeletions: number;
+    reposWorked: number;
+  };
+}
+
+export interface MonthlyAnalysisResult {
+  summary: string;
+  achievements: string[];
+  technicalGrowth: string[];
+  overallPattern: string;
+  recommendations: string[];
+  weeklyBreakdown: Array<{
+    week: number;
+    summary: string;
+    keyActivity: string;
+  }>;
+  metrics?: {
+    totalCommits: number;
+    weeksActive: number;
+    reposWorked: number;
+    averageCommitsPerWeek: number;
+  };
+}
+
+export interface KeyCommitInfo {
+  sha: string;
+  message: string;
+  additions: number;
+  deletions: number;
+  repoFullName: string;
+  significance: string;
+  reason?: string;
+}
+
+export interface CommitReview {
+  sha: string;
+  message: string;
+  review: string;
+  quality: 'good' | 'average' | 'needs_improvement';
+  suggestions?: string[];
+  repoFullName?: string;
+  technicalQuality?: string;
+  complexity?: string;
+  overallReview?: string;
+  specificFeedback?: string[];
+  learningPoints?: string[];
+  summary?: string;
+  impact?: string[];
+  goodPractices?: string[];
+  improvements?: string[];
 }

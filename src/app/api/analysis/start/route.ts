@@ -105,10 +105,12 @@ export async function POST(request: NextRequest) {
       },
     });
 
-    if (existingRun && existingRun.status === "IN_PROGRESS") {
+    if (existingRun && (existingRun.status === "IN_PROGRESS" || existingRun.status === "PAUSED")) {
       return NextResponse.json(
         {
-          error: "Analysis already in progress",
+          error: existingRun.status === "PAUSED" 
+            ? "Analysis is paused. Please resume or restart it."
+            : "Analysis already in progress",
           analysisRunId: existingRun.id,
           status: existingRun.status,
           phase: existingRun.phase,
@@ -175,6 +177,15 @@ export async function POST(request: NextRequest) {
 // 분석 실행 (백그라운드)
 // ============================================
 
+// 상태 체크 함수 - PAUSED면 true 반환
+async function checkIfPaused(analysisRunId: string): Promise<boolean> {
+  const run = await db.analysisRun.findUnique({
+    where: { id: analysisRunId },
+    select: { status: true },
+  });
+  return run?.status === "PAUSED";
+}
+
 async function runAnalysis(
   analysisRunId: string,
   orgId: string,
@@ -192,6 +203,12 @@ async function runAnalysis(
         startedAt: new Date(),
       },
     });
+
+    // 상태 체크
+    if (await checkIfPaused(analysisRunId)) {
+      console.log(`[Analysis] Paused before METRICS: ${analysisRunId}`);
+      return;
+    }
 
     // 2. Phase 1: 메트릭 계산
     await updatePhase(analysisRunId, "METRICS", 1, "메트릭 계산 중...");
@@ -217,21 +234,46 @@ async function runAnalysis(
       },
     });
 
+    // 상태 체크
+    if (await checkIfPaused(analysisRunId)) {
+      console.log(`[Analysis] Paused before CLUSTERING: ${analysisRunId}`);
+      return;
+    }
+
     // 3. Phase 2: WorkUnit 클러스터링
-    await updatePhase(analysisRunId, "CLUSTERING", 2, "WorkUnit 클러스터링 중...");
+    // 예측값 계산
+    const { predictWorkUnitCount } = await import("@/lib/analysis/prediction");
+    const workUnitPrediction = predictWorkUnitCount(
+      metrics.productivity.totalCommits,
+      metrics.diversity.repositoryCount
+    );
+
+    await updatePhaseWithPrediction(analysisRunId, "CLUSTERING", 2, "WorkUnit 클러스터링 중...", workUnitPrediction);
     const { clusterCommitsIntoWorkUnits, saveWorkUnitsToDb } = await import("@/lib/analysis/clustering");
 
     const workUnits = await clusterCommitsIntoWorkUnits(orgId, userLogin, year);
     await saveWorkUnitsToDb(analysisRunId, workUnits);
+
+    // 상태 체크
+    if (await checkIfPaused(analysisRunId)) {
+      console.log(`[Analysis] Paused before SCORING: ${analysisRunId}`);
+      return;
+    }
 
     // 4. Phase 3: 임팩트 스코어링
     await updatePhase(analysisRunId, "SCORING", 3, "임팩트 스코어링 중...");
     const { updateWorkUnitScores } = await import("@/lib/analysis/scoring");
     await updateWorkUnitScores(analysisRunId, orgId);
 
-    // 5. Phase 4: AI 샘플링
-    await updatePhase(analysisRunId, "SAMPLING", 4, "AI 샘플링 중...");
-    const { selectSamplesPerUserPerRepo, saveSamplingResultForUser } = await import("@/lib/ai/sampling");
+    // 상태 체크
+    if (await checkIfPaused(analysisRunId)) {
+      console.log(`[Analysis] Paused before SAMPLING: ${analysisRunId}`);
+      return;
+    }
+
+    // 5. Phase 4: AI 샘플링 (리포별 전체 커버리지)
+    await updatePhase(analysisRunId, "SAMPLING", 4, "리포별 AI 샘플링 중...");
+    const { selectSamplesPerUserPerRepo, saveSamplingResultForUser, saveRepoSummaries } = await import("@/lib/ai/sampling");
 
     // 해당 사용자의 WorkUnit 조회
     const userWorkUnits = await db.workUnit.findMany({
@@ -280,22 +322,44 @@ async function runAnalysis(
         primaryPaths: extractPrimaryPaths(wu.commits.flatMap((wuc) => wuc.commit.files.map((f) => f.path))),
       }));
 
+      // 개선된 샘플링: 모든 리포 커버리지, 리포당 최대 5개
       const samplingResult = await selectSamplesPerUserPerRepo(userWorkUnitData, {
-        samplesPerRepo: 3,
-        maxTotalSamples: 15,
-        minImpactScore: 0,
+        minSamplesPerRepo: 1,
+        maxSamplesPerRepo: 5,      // 리포당 최대 5개
+        maxTotalSamples: null,     // 제한 없음
+        heuristicThreshold: 5,     // 5개 이하는 전체 선택
+        batchSize: 5,              // 5개 리포씩 배치 처리
       });
 
+      // 샘플링 결과 저장
       await saveSamplingResultForUser(analysisRunId, userLogin, samplingResult);
-      console.log(`[Analysis] Sampled ${samplingResult.selectedWorkUnitIds.length} WorkUnits for ${userLogin}`);
+
+      // 리포별 요약 저장
+      if ('repoSummaries' in samplingResult && samplingResult.repoSummaries.length > 0) {
+        await saveRepoSummaries(analysisRunId, samplingResult.repoSummaries);
+      }
+
+      console.log(`[Analysis] Sampled ${samplingResult.selectedWorkUnitIds.length} WorkUnits from ${'repoSummaries' in samplingResult ? samplingResult.repoSummaries.length : 0} repos for ${userLogin}`);
     }
 
     // AI 분석 (ANTHROPIC_API_KEY가 있는 경우만)
     if (process.env.ANTHROPIC_API_KEY) {
+      // 상태 체크
+      if (await checkIfPaused(analysisRunId)) {
+        console.log(`[Analysis] Paused before DIFF_FETCH: ${analysisRunId}`);
+        return;
+      }
+
       // 6. Phase 5: Diff 조회
       await updatePhase(analysisRunId, "DIFF_FETCH", 5, "Diff 조회 중...");
       const { fetchAndSaveDiffsForAnalysis } = await import("@/lib/analysis/diff");
       await fetchAndSaveDiffsForAnalysis(analysisRunId, orgId);
+
+      // 상태 체크
+      if (await checkIfPaused(analysisRunId)) {
+        console.log(`[Analysis] Paused before AI_ANALYSIS: ${analysisRunId}`);
+        return;
+      }
 
       // 7. Phase 6: AI 분석
       await updatePhase(analysisRunId, "AI_ANALYSIS", 6, "AI 분석 중...");
@@ -354,6 +418,27 @@ async function updatePhase(
         currentStep: step,
         totalSteps: 6,
         message,
+      },
+    },
+  });
+}
+
+async function updatePhaseWithPrediction(
+  analysisRunId: string,
+  phase: string,
+  step: number,
+  message: string,
+  workUnitPrediction: { min: number; expected: number; max: number }
+): Promise<void> {
+  await db.analysisRun.update({
+    where: { id: analysisRunId },
+    data: {
+      phase,
+      progress: {
+        currentStep: step,
+        totalSteps: 6,
+        message,
+        workUnitPrediction,
       },
     },
   });

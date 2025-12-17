@@ -88,6 +88,9 @@ export async function callClaude<T>(
   request: AIRequest
 ): Promise<AIResponse<T>> {
   const client = getAnthropicClient();
+  const startTime = Date.now();
+
+  console.log(`[Claude] API 호출 시작... (model: ${AI_MODEL})`);
 
   const response = await client.messages.create({
     model: AI_MODEL,
@@ -129,6 +132,9 @@ export async function callClaude<T>(
   const inputTokens = response.usage.input_tokens;
   const outputTokens = response.usage.output_tokens;
   const totalCost = calculateCost(inputTokens, outputTokens);
+  const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+
+  console.log(`[Claude] API 호출 완료 (${elapsed}s, tokens: ${inputTokens}+${outputTokens}, cost: $${totalCost.toFixed(4)})`);
 
   return {
     data: parsedData,

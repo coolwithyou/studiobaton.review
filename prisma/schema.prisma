@@ -90,10 +90,11 @@ model Repository {
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
-  org          Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  commits      Commit[]
-  pullRequests PullRequest[]
-  workUnits    WorkUnit[]
+  org               Organization          @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  commits           Commit[]
+  pullRequests      PullRequest[]
+  workUnits         WorkUnit[]
+  analysisSummaries RepoAnalysisSummary[]
 
   @@index([orgId])
 }
@@ -248,9 +249,10 @@ model AnalysisRun {
   createdAt   DateTime       @default(now())
   createdById String?
 
-  org       Organization   @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  workUnits WorkUnit[]
-  reports   YearlyReport[]
+  org           Organization          @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  workUnits     WorkUnit[]
+  reports       YearlyReport[]
+  repoSummaries RepoAnalysisSummary[]
 
   @@unique([orgId, year, userLogin]) // 기여자별 독립 분석
   @@index([status])
@@ -261,6 +263,7 @@ model AnalysisRun {
 enum AnalysisStatus {
   PENDING
   IN_PROGRESS
+  PAUSED
   COMPLETED
   FAILED
 }
@@ -270,19 +273,21 @@ enum AnalysisStatus {
 // ============================================
 
 model WorkUnit {
-  id            String   @id @default(cuid())
-  analysisRunId String
-  userLogin     String
-  repoId        String
-  title         String? // AI가 생성한 작업 제목
-  summary       String?  @db.Text // AI가 생성한 작업 요약
-  workType      String? // feature, bugfix, refactor, docs, test, chore
-  impactScore   Float    @default(0)
-  impactFactors Json? // 점수 산출 근거
-  isSampled     Boolean  @default(false)
-  startDate     DateTime
-  endDate       DateTime
-  createdAt     DateTime @default(now())
+  id               String   @id @default(cuid())
+  analysisRunId    String
+  userLogin        String
+  repoId           String
+  title            String? // AI가 생성한 작업 제목
+  summary          String?  @db.Text // AI가 생성한 작업 요약
+  workType         String? // feature, bugfix, refactor, docs, test, chore
+  impactScore      Float    @default(0)
+  impactFactors    Json? // 점수 산출 근거
+  isSampled        Boolean  @default(false)
+  samplingReason   String?  @db.Text // 샘플링 선정 이유
+  samplingCategory String? // business_logic, architecture, bug_fix, feature, quality
+  startDate        DateTime
+  endDate          DateTime
+  createdAt        DateTime @default(now())
 
   analysisRun AnalysisRun      @relation(fields: [analysisRunId], references: [id], onDelete: Cascade)
   repo        Repository       @relation(fields: [repoId], references: [id], onDelete: Cascade)
@@ -364,4 +369,38 @@ model YearlyReport {
   @@unique([analysisRunId, userLogin])
   @@index([analysisRunId])
   @@index([userLogin])
+}
+
+// ============================================
+// 리포별 분석 요약
+// ============================================
+
+model RepoAnalysisSummary {
+  id            String @id @default(cuid())
+  analysisRunId String
+  repoId        String
+  repoFullName  String
+
+  // 통계
+  totalWorkUnits   Int
+  sampledWorkUnits Int
+  totalCommits     Int
+  avgImpactScore   Float
+
+  // 작업 유형 분포
+  workTypeDistribution Json // { feature: 5, bugfix: 3, ... }
+
+  // AI 인사이트 (Stage 1 완료 후 업데이트)
+  keyInsights    Json? // ["인사이트1", "인사이트2"]
+  avgCodeQuality Float?
+  samplingReason String? @db.Text
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  analysisRun AnalysisRun @relation(fields: [analysisRunId], references: [id], onDelete: Cascade)
+  repo        Repository  @relation(fields: [repoId], references: [id], onDelete: Cascade)
+
+  @@unique([analysisRunId, repoId])
+  @@index([analysisRunId])
 }

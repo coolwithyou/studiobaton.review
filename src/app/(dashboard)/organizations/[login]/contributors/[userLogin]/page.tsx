@@ -176,15 +176,10 @@ export default function ContributorDetailPage() {
         throw new Error(data.error || "Failed to start analysis");
       }
 
-      // Refresh analysis data
-      const analysisRes = await fetch(`/api/organizations/${orgLogin}/contributors/${userLogin}/analysis`);
-      if (analysisRes.ok) {
-        const analysis = await analysisRes.json();
-        setAnalysisData(analysis);
-      }
+      // 분석 시작 성공 시 진행 페이지로 이동
+      router.push(`/organizations/${orgLogin}/contributors/${userLogin}/analysis/${year}/progress`);
     } catch (err) {
       alert(err instanceof Error ? err.message : "분석 시작 실패");
-    } finally {
       setAnalysisLoading(null);
     }
   };
@@ -460,9 +455,13 @@ export default function ContributorDetailPage() {
                           </Link>
                         </Button>
                       ) : analysis.analysisStatus === "IN_PROGRESS" ? (
-                        <Button size="sm" disabled>
-                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                          분석 중...
+                        <Button size="sm" variant="secondary" asChild>
+                          <Link
+                            href={`/organizations/${orgLogin}/contributors/${userLogin}/analysis/${analysis.year}/progress`}
+                          >
+                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                            분석 중...
+                          </Link>
                         </Button>
                       ) : (
                         <Button

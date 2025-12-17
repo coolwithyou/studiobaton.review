@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -86,6 +86,7 @@ interface AnalysisResultData {
 
 export default function AnalysisResultPage() {
   const params = useParams();
+  const router = useRouter();
   const orgLogin = params.login as string;
   const userLogin = params.userLogin as string;
   const year = parseInt(params.year as string, 10);
@@ -101,11 +102,34 @@ export default function AnalysisResultPage() {
         const res = await fetch(
           `/api/organizations/${orgLogin}/contributors/${userLogin}/analysis/${year}`
         );
+        
+        // 분석 상태 확인 - 미완료 시 progress 페이지로 리다이렉트
+        if (res.status === 202) {
+          // 202 Accepted: 분석 진행 중
+          router.replace(`/organizations/${orgLogin}/contributors/${userLogin}/analysis/${year}/progress`);
+          return;
+        }
+        
         if (!res.ok) {
           const json = await res.json();
+          
+          // 분석이 없거나 진행 중인 경우 progress 페이지로 이동
+          if (json.status === "IN_PROGRESS" || json.status === "PENDING") {
+            router.replace(`/organizations/${orgLogin}/contributors/${userLogin}/analysis/${year}/progress`);
+            return;
+          }
+          
           throw new Error(json.error || "Failed to fetch analysis result");
         }
+        
         const json = await res.json();
+        
+        // 분석 완료 여부 확인
+        if (json.analysisRun?.status !== "COMPLETED") {
+          router.replace(`/organizations/${orgLogin}/contributors/${userLogin}/analysis/${year}/progress`);
+          return;
+        }
+        
         setData(json);
       } catch (err) {
         setError(err instanceof Error ? err.message : "Unknown error");
@@ -115,7 +139,7 @@ export default function AnalysisResultPage() {
     };
 
     fetchData();
-  }, [orgLogin, userLogin, year]);
+  }, [orgLogin, userLogin, year, router]);
 
   if (loading) {
     return <AnalysisResultSkeleton />;

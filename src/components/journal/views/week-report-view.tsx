@@ -82,10 +82,10 @@ export function WeekReportView({
     }
   };
 
-  const result = weeklyAnalysis?.stage3Result as WeeklyAnalysisResult | undefined;
-  const stage1Result = weeklyAnalysis?.stage1Result as { keyCommits: KeyCommitInfo[] } | undefined;
-  const stage2Result = weeklyAnalysis?.stage2Result as { commitReviews: CommitReview[] } | undefined;
-  const isCompleted = weeklyAnalysis?.status === "COMPLETED";
+  const result = (weeklyAnalysis as any)?.stage3Result;
+  const stage1Result = (weeklyAnalysis as any)?.stage1Result as { keyCommits: KeyCommitInfo[] } | undefined;
+  const stage2Result = (weeklyAnalysis as any)?.stage2Result as { commitReviews: CommitReview[] } | undefined;
+  const isCompleted = weeklyAnalysis?.status === "DONE";
 
   const keyCommits = stage1Result?.keyCommits || [];
   const commitReviews = stage2Result?.commitReviews || [];
@@ -238,7 +238,7 @@ export function WeekReportView({
                     </CardHeader>
                     <CardContent>
                       <ul className="space-y-2">
-                        {result.keyActivities.map((activity, i) => (
+                        {result.keyActivities.map((activity: string, i: number) => (
                           <li key={i} className="flex items-start gap-2">
                             <span className="text-muted-foreground mt-1">•</span>
                             <span className="text-sm leading-relaxed">{activity}</span>
@@ -260,7 +260,7 @@ export function WeekReportView({
                     </CardHeader>
                     <CardContent>
                       <ul className="space-y-2">
-                        {result.technicalHighlights.map((highlight, i) => (
+                        {result.technicalHighlights.map((highlight: string, i: number) => (
                           <li key={i} className="flex items-start gap-2">
                             <Code2 className="h-4 w-4 text-blue-600 mt-0.5 flex-shrink-0" />
                             <span className="text-sm leading-relaxed">{highlight}</span>
@@ -298,7 +298,7 @@ export function WeekReportView({
                   </CardHeader>
                   <CardContent>
                     <ul className="space-y-2">
-                      {result.insights.map((insight, i) => (
+                      {result.insights.map((insight: string, i: number) => (
                         <li key={i} className="flex items-start gap-2">
                           <Lightbulb className="h-4 w-4 text-amber-600 mt-0.5 flex-shrink-0" />
                           <span className="text-sm leading-relaxed">{insight}</span>
@@ -339,10 +339,10 @@ export function WeekReportView({
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-2 mb-2">
                             <Badge variant="outline" className="text-xs">
-                              {review.repoFullName.split('/')[1]}
+                              {review.repoFullName?.split('/')[1] || 'unknown'}
                             </Badge>
-                            {getQualityBadge(review.technicalQuality)}
-                            {getComplexityBadge(review.complexity)}
+                            {getQualityBadge(review.technicalQuality || '')}
+                            {getComplexityBadge(review.complexity || '')}
                           </div>
                           <p className="text-sm font-medium line-clamp-2">
                             {review.message.split("\n")[0]}
@@ -368,14 +368,14 @@ export function WeekReportView({
                         <Separator />
 
                         {/* Impact */}
-                        {review.impact.length > 0 && (
+                        {(review as any).impact?.length > 0 && (
                           <div>
                             <h4 className="text-sm font-medium mb-2 flex items-center gap-2">
                               <TrendingUp className="h-4 w-4" />
                               임팩트
                             </h4>
                             <ul className="space-y-1">
-                              {review.impact.map((item, i) => (
+                              {(review as any).impact.map((item: string, i: number) => (
                                 <li key={i} className="text-sm text-muted-foreground">
                                   • {item}
                                 </li>
@@ -385,14 +385,14 @@ export function WeekReportView({
                         )}
 
                         {/* Risks */}
-                        {review.risks.length > 0 && (
+                        {(review as any).risks?.length > 0 && (
                           <div>
                             <h4 className="text-sm font-medium mb-2 flex items-center gap-2">
                               <AlertTriangle className="h-4 w-4 text-amber-600" />
                               리스크
                             </h4>
                             <ul className="space-y-1">
-                              {review.risks.map((risk, i) => (
+                              {(review as any).risks.map((risk: string, i: number) => (
                                 <li key={i} className="text-sm text-muted-foreground">
                                   • {risk}
                                 </li>
@@ -402,14 +402,14 @@ export function WeekReportView({
                         )}
 
                         {/* Learnings */}
-                        {review.learnings.length > 0 && (
+                        {(review as any).learnings?.length > 0 && (
                           <div>
                             <h4 className="text-sm font-medium mb-2 flex items-center gap-2">
                               <Lightbulb className="h-4 w-4 text-blue-600" />
                               학습 포인트
                             </h4>
                             <ul className="space-y-1">
-                              {review.learnings.map((learning, i) => (
+                              {(review as any).learnings.map((learning: string, i: number) => (
                                 <li key={i} className="text-sm text-muted-foreground">
                                   • {learning}
                                 </li>
@@ -419,11 +419,11 @@ export function WeekReportView({
                         )}
 
                         {/* Analyzed Files */}
-                        {review.filesAnalyzed && review.filesAnalyzed.length > 0 && (
+                        {(review as any).filesAnalyzed?.length > 0 && (
                           <div>
                             <h4 className="text-sm font-medium mb-2">분석된 파일</h4>
                             <div className="space-y-2">
-                              {review.filesAnalyzed.map((file: any, i: number) => (
+                              {(review as any).filesAnalyzed.map((file: any, i: number) => (
                                 <div
                                   key={i}
                                   className="text-xs bg-muted/30 rounded p-2"
@@ -509,7 +509,7 @@ export function WeekReportView({
                                   {/* 리포지토리 */}
                                   <div className="flex items-center gap-2 mb-1">
                                     <Badge variant="outline" className="text-xs">
-                                      {commit.repoName}
+                                      {commit.repoFullName?.split('/')[1] || 'unknown'}
                                     </Badge>
                                     <span className="text-xs text-muted-foreground">
                                       {format(new Date(commit.committedAt), "HH:mm")}
@@ -563,3 +563,4 @@ export function WeekReportView({
     </div>
   );
 }
+
